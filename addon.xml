@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.myimdbfshare"
+       name="Top 250 IMDB Fshare Finder"
+       version="1.2.0"
+       provider-name="cuadedanh@gmail.com">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+     <import addon="script.module.requests"/>
+      <import addon="script.module.beautifulsoup4"/>
+  </requires>
+  <extension point="xbmc.python.pluginsource"
+             library="default.py">
+        <provides>video</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en">Browse IMDB Top 250 and find Fshare links.</summary>
+    <description lang="en">This addon allows you to view the IMDB Top 250 movies and attempt to find Fshare.vn download links for each movie.</description>
+    <platform>all</platform>
+    <license>GPL-2.0-only</license>
+    <assets>
+      <icon>icon.png</icon>
+    </assets>
+  </extension>
+</addon>

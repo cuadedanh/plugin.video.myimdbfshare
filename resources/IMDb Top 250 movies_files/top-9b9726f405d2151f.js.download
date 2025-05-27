@@ -1,0 +1,84 @@
+(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[4490],{15342:function(e,t,r){(window.__NEXT_P=window.__NEXT_P||[]).push(["/chart/top",function(){return r(70066)}])},33954:function(e,t,r){"use strict";r.d(t,{Q:function(){return s}});var i=r(79722);let a=(e,t)=>({...(0,i.rf)(e.node,t),currentRank:e.currentRank}),s=(e,t)=>(e?.map(e=>a(e,t))||[]).filter(e=>e.titleText&&e.titleId&&e.titleType.id)},61535:function(e,t,r){"use strict";r.d(t,{Z:function(){return s}});var i=r(30382),a=r.n(i);let s=a()`
+    fragment ChartTitleFacetFields on ChartTitleSearchConnection {
+        genres: facet(facetField: GENRES) {
+            filterId
+            text
+            total
+        }
+
+        keywords: facet(facetField: KEYWORDS) {
+            filterId
+            text
+            total
+        }
+
+        watchOptions: facet(facetField: WATCH_PROVIDERS) {
+            filterId
+            text
+            total
+        }
+    }
+`},50302:function(e,t,r){"use strict";function i(e){return e?.map(e=>e.node.id)}function a(e){return{genres:e?.genres??[],keywords:e?.keywords??[],watchOptions:e?.watchOptions??[]}}r.d(t,{J:function(){return i},s:function(){return a}})},70066:function(e,t,r){"use strict";r.r(t),r.d(t,{REF_TAG_PREFIX:function(){return F},__N_SSP:function(){return k},default:function(){return V}});var i=r(52322);r(2784);var a=r(25436),s=r(79855),n=r(19596),o=r(45103),l=r(91842),d=r(12717),c=r(18006),f=r(8816),u=r(7425),h=r(71919),_=r(79722),T=r(13433),p=r(25592),m=r(72814),g=r(83092),v=r(4002),I=r(51442),y=r(30382),C=r.n(y),M=r(36565),O=r(61535);let S=C()`
+    query Top250MoviesPagination($first: Int!, $after: String) {
+        chartTitles(
+            first: $first
+            after: $after
+            chart: { chartType: TOP_RATED_MOVIES }
+        ) {
+            pageInfo {
+                endCursor
+                hasNextPage
+                hasPreviousPage
+            }
+            edges {
+                node {
+                    ...TitleTopCastAndCrew
+                }
+            }
+        }
+    }
+    ${M.Dl}
+`;C()`
+    query Top250Movies(
+        $first: Int!
+        $sort: AdvancedTitleSearchSort
+        $filter: AdvancedTitleSearchConstraints
+    ) {
+        chartTitles(
+            first: $first
+            chart: { chartType: TOP_RATED_MOVIES }
+            sort: $sort
+            filter: $filter
+        ) {
+            edges {
+                currentRank
+                node {
+                    ...TitleListItemMetadata
+                }
+            }
+
+            ...ChartTitleFacetFields
+        }
+    }
+    ${M.Zz}
+    ${O.Z}
+`;let w=C()`
+    query Top250MoviesRefiner(
+        $first: Int!
+        $sort: AdvancedTitleSearchSort
+        $filter: AdvancedTitleSearchConstraints
+    ) {
+        chartTitles(
+            first: $first
+            chart: { chartType: TOP_RATED_MOVIES }
+            sort: $sort
+            filter: $filter
+        ) {
+            edges {
+                node {
+                    id
+                }
+            }
+        }
+    }
+`;var P=r(33954),R=r(50302);let x=(e,t,r,i)=>{let{nameMainLinkBuilder:a}=(0,p.WO)();return e?{description:i,facetFields:(0,R.s)(e.chartTitles),items:(0,P.Q)(e.chartTitles?.edges,a),name:r,refinedItemIds:(0,R.J)(t?.chartTitles?.edges)}:{description:i,items:[],name:r}};var E=e=>{let{initialFilterProps:t,initialRefinerQueryInfo:r,initialSortProps:a,pageData:n,pageRefinerData:l}=e,y=(0,s.Z)(),{value:C}=(0,m.Lz)(),{nameMainLinkBuilder:M}=(0,p.WO)(),O=(0,I.D9)(v.$.CHART_TOP),P=(0,g.z)(O),{description:R,facetFields:E,items:N,name:b,refinedItemIds:k}=x(n,l,y.formatMessage(c.w1.TOP_250_MOVIES),y.formatMessage(c.w2.TOP_250_MOVIES)),F=(0,f.Yi)(250,y,a);if(0===N.length)return null;let V=y.formatMessage({id:"chart_top_250_movies_disclaimer_1",defaultMessage:"The Top Rated Movie list only includes feature films."}),j=y.formatMessage({id:"chart_top_250_movies_disclaimer_2",defaultMessage:"Shorts, TV movies, and documentaries are not included"}),Q=y.formatMessage({id:"chart_top_250_movies_disclaimer_3",defaultMessage:"The list is ranked by a formula which includes the number of ratings each movie received from users, and value of ratings received from regular users"}),D=y.formatMessage({id:"chart_top_250_movies_disclaimer_4",defaultMessage:"To be included on the list, a movie must receive ratings from at least 25000 users"}),Z=y.formatMessage({id:"chart_learn_more",defaultMessage:"Learn more about how list ranking is determined."}),W=(0,u.QU)(n);return(0,i.jsx)(d.V,{belowChartContent:(0,i.jsxs)($,{"data-testid":c.z7.BOTTOM_CONTENT,children:[(0,i.jsx)("p",{children:V}),(0,i.jsxs)(A,{children:[(0,i.jsx)("li",{children:j}),(0,i.jsx)("li",{children:Q}),(0,i.jsx)("li",{children:D})]}),(0,i.jsx)(o.TextLink,{href:`https://help.imdb.com/article/imdb/featured-content/why-doesn-t-a-title-with-the-average-user-vote-of-9-4-appear-in-your-top-250-movies-or-tv-list/GTU67Q5QQ8W53RJT?pf_rd_m=A2FGELUUNOQJNL&pf_rd_p=1a264172-ae11-42e4-8ef7-7fed1973bb8f&pf_rd_r=YBZT6MRVGM65WJJZPKR8&pf_rd_s=center-1&pf_rd_t=15506&pf_rd_i=top&ref_=cons_${C}_learnmore`,text:Z})]}),pageDataForStructuredData:W,chartSpecificPageMetadata:{canonicalUrl:O,hrefLangEntries:P},chartSize:250,chartType:T.lZo.Titles,description:R,filterProps:{additionalQueryVariables:{first:250},facetFields:E,initialSearchConstraints:t?.searchConstraints,query:w},initialRefinerQueryInfo:r,initialView:h.c.COMPACT,items:N,name:b,paginatedQueryInfo:{query:S,itemsTransform:e=>({hasNextPage:!!e?.chartTitles?.pageInfo?.hasNextPage,items:(0,_.Kw)(e.chartTitles?.edges.map(e=>e.node),M)}),pageInfo:void 0,pathToPageInfo:"chartTitles.pageInfo"},refinedItemsIds:k,showNumberingInConstText:!0,sortByProps:{query:w,sortOptions:F,initialSelectionValue:a?.sortBy??c.Rh.RANKING}})};let $=n.default.div.withConfig({componentId:"sc-46ee5ff8-0"})(["",";display:flex;flex-direction:column;li{list-style-type:disc;margin-left:",";}"],(0,l.setTypographyType)("bodySmall"),l.spacing.m),A=n.default.ul.withConfig({componentId:"sc-46ee5ff8-1"})(["margin:"," 0;"],l.spacing.s);var N=r(51893),b=r(65022),k=!0;let F=N.l.CHART_TOP;var V=e=>(0,i.jsx)(b.Z,{baseColor:"baseAlt",hideAdWrap:!0,cti:a.CTIS.CHART_CTI,children:(0,i.jsx)(E,{...e})})}},function(e){e.O(0,[9774,7406,578,8440,5163,1526,2496,1889,8887,5022,8794,1811,5418,5356,859,5172,9722,2618,1905,5210,7118,6122,9117,1137,2888,179],function(){return e(e.s=15342)}),_N_E=e.O()}]);

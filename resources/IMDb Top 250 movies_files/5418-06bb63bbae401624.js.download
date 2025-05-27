@@ -1,0 +1,81 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[5418],{28072:function(t,e,a){a.d(e,{F4:function(){return o},sq:function(){return n},uN:function(){return l}});var i=a(30382),r=a.n(i);let n=r()`
+    fragment BaseTitleCard on Title {
+        id
+        titleText {
+            text
+        }
+        titleType {
+            id
+            text
+            canHaveEpisodes
+            displayableProperty {
+                value {
+                    plainText
+                }
+            }
+        }
+        originalTitleText {
+            text
+        }
+        primaryImage {
+            id
+            width
+            height
+            url
+            caption {
+                plainText
+            }
+        }
+        releaseYear {
+            year
+            endYear
+        }
+        ratingsSummary {
+            aggregateRating
+            voteCount
+        }
+        runtime {
+            seconds
+        }
+        certificate {
+            rating
+        }
+        canRate {
+            isRatable
+        }
+        titleGenres {
+            genres(limit: 3) {
+                genre {
+                    text
+                }
+            }
+        }
+        canHaveEpisodes
+    }
+`,o=r()`
+    fragment TitleCardTrailer on Title {
+        latestTrailer {
+            id
+        }
+    }
+`,l=r()`
+    fragment PersonalizedTitleCardUserRating on Title {
+        userRating @include(if: $includeUserRating) {
+            value
+        }
+    }
+`},11586:function(t,e,a){a.d(e,{Nf:function(){return R},z7:function(){return c}});var i=a(52322),r=a(86704),n=a(72779),o=a.n(n);a(2784);var l=a(79855),s=a(19596),d=a(45103),u=a(91842),g=a(44667),m=a(16983);let c={CONTAINER:"ratingGroup--container",IMDB_RATING:"ratingGroup--imdb-rating",OTHER_USER_RATING:"ratingGroup--other-user-rating",PLACEHOLDER:"ratingGroup--placeholder",USER_RATING:"ratingGroup--user-rating"},f="hide-vote-count",p="standalone-star",R=t=>{let{canRate:e,className:a,hideMaxIMDbRating:r,hideVoteCountOnSmallBreakpoints:n,otherUserRating:s,titleId:u,ratingsSummary:R,rateButtonLabel:b,showPlaceholderStarIfApplicable:T,titleText:x,refOverride:v}=t,I=(0,l.Z)(),{rating:N}=(0,d.useRatingsContext)(u)||{},P=(0,g.P)(N,"user"),L=(0,g.P)(R?.aggregateRating,"imdb"),C=(0,g.P)(s,"user"),M=I.formatMessage({id:"common_ariaLabels_IMDbRating",defaultMessage:"IMDb rating: {rating}"},{rating:L||""}),E=I.formatMessage({id:"common_ariaLabels_other_user_rating",defaultMessage:"User rating: {value}"},{value:s}),w=I.formatMessage({id:"common_ariaLabels_ratingButtonRated",defaultMessage:"Your rating: {rating}"},{rating:P||""}),$=I.formatMessage({id:"common_ariaLabels_ratingButtonUnrated",defaultMessage:"Rate {titleName}"},{titleName:x}),y=I.formatMessage({id:"common_ratingPrompt_rate",defaultMessage:"Rate"}),S=R?.voteCount?I.formatNumber(R?.voteCount,{notation:"compact",compactDisplay:"short"}):void 0,U=T&&!L&&!(e&&x);return(0,i.jsxs)(_,{className:a,"data-testid":c.CONTAINER,children:[L&&(0,i.jsx)(d.RatingStar,{"data-testid":c.IMDB_RATING,ariaLabel:M,className:c.IMDB_RATING,formattedRating:L,maxRating:r?void 0:10,formattedVoteCount:S,voteCountClassName:n?f:""}),s&&(0,i.jsx)(d.RatingStar,{ariaLabel:E,className:c.OTHER_USER_RATING,"data-testid":c.OTHER_USER_RATING,formattedRating:C,type:"otherUser"}),e&&x&&(0,i.jsx)(m.T,{title:{id:u,titleText:x,canRate:e},refOverride:v,ratingTriggerComponent:t=>{let{onUserRatingClick:e}=t;return(0,i.jsx)(h,{ariaLabelRated:w,ariaLabelUnrated:$,formattedRating:P,className:o()(c.USER_RATING,{[p]:!L}),onClick:e,rateLabel:"string"==typeof b?b:y})}}),U&&(0,i.jsx)(d.RatingStar,{"data-testid":c.PLACEHOLDER,"aria-hidden":!0,className:o()(c.PLACEHOLDER,p),type:"placeholder"})]})},_=s.default.div.withConfig({componentId:"sc-bfa1b6a1-0"})(["align-items:center;display:inline-flex;flex-flow:row wrap;flex-direction:row;gap:0 ",";.","{padding:0;min-width:0;}.","{","{display:none;}}"],r.spacing.xs,p,f,u.mediaQueries.breakpoints.below.m),h=(0,s.default)(d.RateButton).withConfig({componentId:"sc-bfa1b6a1-1"})(["font-size:inherit;height:fit-content;padding:0;"])},16983:function(t,e,a){a.d(e,{T:function(){return R}});var i=a(52322),r=a(77725),n=a(2784),o=a(45103),l=a(89363),s=a(28827),d=a(30816),u=a(52817),g=a(72814),m=a(27261),c=a(98046),f=a(69635);let p=(0,a(24667).vU)({ratingButtonRatedAriaLabel:{id:"common_ariaLabels_ratingButtonRated",defaultMessage:"Your rating: {rating}"},ratingButtonUnratedAriaLabel:{id:"common_ariaLabels_ratingButtonUnrated",defaultMessage:"Rate {titleName}"},ratingPromptHeaderLabel:{id:"common_ratingPrompt_header",defaultMessage:"Rate this"},ratingPromptRateLabel:{id:"common_ratingPrompt_rate",defaultMessage:"Rate"},ratingPromptRemoveRatingLabel:{id:"common_ratingPrompt_removeRating",defaultMessage:"Remove rating"},ratingPromptErrorLabel:{id:"common_ratingPrompt_error",defaultMessage:"Can't rate title. Try again later."},ratingPromptAriaLabelPrefix:{id:"common_ratingPrompt_ariaLabelPrefix",defaultMessage:"Rating"}}),R=t=>{let{title:{id:e,titleText:a,canRate:R},ratingTriggerComponent:_,refOverride:h}=t,[b,T]=(0,n.useState)(!1),x=(0,u.n)(),{makeRefMarker:v}=(0,g.Lz)(),{rating:I,updateRating:N,deleteRating:P}=(0,o.useRatingsContext)(e)||{},L=v(h?[(0,g.Qk)({refStr:h,explanation:"Not all usages of RatingPrompt have been converted to link builders."}),g.Cd.RATING]:g.Cd.RATING),C=(0,m.EO)(),{updateTitleRating:M,deleteTitleRating:E,tempRateUpdateLogRef:w}=(0,d.vY)({titleId:e,refTag:L,currentRating:I}),$=(0,s.N)(p.ratingPromptHeaderLabel),y=(0,s.N)(p.ratingPromptRateLabel),S=(0,s.N)(p.ratingPromptRemoveRatingLabel),U=(0,s.N)(p.ratingPromptAriaLabelPrefix),A=(0,f.p)();return(0,i.jsxs)(i.Fragment,{children:[_({onUserRatingClick:()=>{R&&(C({pageAction:c.QJ.USER_RATING_PROMPT_OPEN,hitType:r.Re.POP_UP,refMarkerString:L}),T(!0))}}),R&&(0,i.jsx)(o.RatingPrompt,{isOpen:b,tconst:e,title:a,headerLabel:$,rateLabel:y,ariaLabelPrefix:U,shouldUseNewRatingFlow:!0,secondaryButtonText:S,secondaryButtonType:l.uu.RemoveRating,onPrimaryButtonClicked:async(t,e)=>{if(!t){T(!1);return}x?(T(!1),N?.(t,L,()=>M(t,e))):(await w(t,e),A({rating:t,titleId:e,ref:L}))},onSecondaryButtonClicked:async(t,e)=>{T(!1),P?.(L,()=>E(e))},onCloseClicked:()=>{T(!1)}})]})}},33444:function(t,e,a){a.d(e,{f:function(){return s}});var i=a(52322);a(2784);var r=a(19596),n=a(45103),o=a(59459),l=a(28827);let s=t=>{let{titleId:e,watchlistMetricsContext:a}=t,r=(0,l.N)({id:"common_buttons_watchlist",defaultMessage:"Watchlist"}),s=(0,l.N)({id:"common_ariaLabel_loading",defaultMessage:"Loading"});return(0,i.jsx)(o.WatchlistConsumer,{id:e,metricsContext:a,render:t=>{let{inWatchlist:e,isLoading:a,onClick:o}=t,l=(0,i.jsx)(n.SecondaryButton,{onClick:o,preIcon:e?"done":"add",width:"full-width",children:r});return a&&(l=(0,i.jsx)(n.SecondaryButton,{onClick:o,width:"full-width",ariaLabel:s,children:(0,i.jsx)(d,{"data-testid":"watchlist-button-loader",type:"circle"})})),l}})},d=(0,r.default)(n.Loader).withConfig({componentId:"sc-446f4d16-0"})(["max-height:30px;max-width:30px;vertical-align:middle;"]);e.Z=s},10304:function(t,e,a){a.d(e,{Q:function(){return o}});var i=a(52322);a(2784);var r=a(45103),n=a(91215);let o=t=>{let{titleId:e,watchlistMetricsContext:a,onPoster:o,onImage:l=!0,size:s,className:d}=t;return(0,i.jsx)(n.F,{id:e,metricsContext:a,render:t=>o?(0,i.jsx)(r.Poster.WatchlistRibbon,{...t,className:d,size:s,"data-testid":`poster-watchlist-ribbon-${t.inWatchlist?"remove":"add"}`}):(0,i.jsx)(r.WatchlistRibbon,{...t,className:d,onImage:l,size:s,"data-testid":`watchlist-ribbon-${t.inWatchlist?"remove":"add"}`})})};e.Z=o},44667:function(t,e,a){a.d(e,{P:function(){return n}});var i=a(79855);let r={default:{maximumFractionDigits:1,minimumFractionDigits:1},imdb:{maximumFractionDigits:1,minimumFractionDigits:1},user:{maximumFractionDigits:0,minimumFractionDigits:0}},n=function(t){let e=arguments.length>1&&void 0!==arguments[1]?arguments[1]:"default",a=arguments.length>2?arguments[2]:void 0,n=(0,i.Z)();if(!t)return"";if(10===t)return"10";let o="user"===e?Math.trunc(t):Number(t.toFixed(1)),l=a??r[e];return n.formatNumber(o,l)}},38270:function(t,e,a){var i,r;function n(t){let e=arguments.length>1&&void 0!==arguments[1]?arguments[1]:"default";if(t<=0)return"hours_minutes_explicit"===e?"0min":"hours_minutes_explicit_short"===e?"0m":"iso_8601"===e?"PT0S":"0:00";let a=Math.floor(t/3600),i=Math.floor(t%3600/60),r=Math.floor(t%60);if("hours_minutes_explicit"===e||"hours_minutes_explicit_short"===e)return(t<60&&t>0&&(i=1),a>0&&i<=0)?`${a}h`:`${a>0?a+"h "+i:i}${"hours_minutes_explicit_short"===e?"m":"min"}`;if("iso_8601"!==e)return`${a>0?a+":"+o(i):i}:${o(r)}`;{let t=a?`${a}H`:"",e=i?`${i}M`:"",n=r?`${r}S`:"";return`PT${t}${e}${n}`}}function o(t){return t<=0||!Number.isInteger(t)?"00":t>9?`${t}`:`0${t}`}a.d(e,{A:function(){return i},L:function(){return n}}),(r=i||(i={})).DEFAULT="default",r.HOURS_MINUTES_EXPLICIT="hours_minutes_explicit",r.HOURS_MINUTES_EXPLICIT_SHORT="hours_minutes_explicit_short",r.ISO_8601="iso_8601"},30816:function(t,e,a){a.d(e,{vY:function(){return m}});var i=a(30382),r=a.n(i),n=a(85701),o=a(27261),l=a(78270),s=a(25673),d=a(29609);let u=r()`
+    mutation UpdateTitleRating($rating: Int!, $titleId: ID!) {
+        rateTitle(input: { rating: $rating, titleId: $titleId }) {
+            rating {
+                value
+            }
+        }
+    }
+`,g=r()`
+    mutation DeleteTitleRating($titleId: ID!) {
+        deleteTitleRating(input: { titleId: $titleId }) {
+            date
+        }
+    }
+`,m=t=>{let[,e]=(0,d.Z)(u),[,a]=(0,d.Z)(g),i=(0,o.EO)(),r=(0,s.hg)({weblabID:l.lh.IMDB_NEXT_WATCHED_FEATURE_1045775,treatments:{T1:!0}})??!1,{addToWatchedTitles:m}=(0,n.V)(),c=e=>{i({refMarkerString:t.refTag,pageAction:e,customPageMetadata:{id:t.titleId}})};return{updateTitleRating:(t,a)=>(c(`rating-add-${a}-${t}`),r&&m(a),e({rating:t,titleId:a})),deleteTitleRating:t=>(c(`rating-del-${t}`),a({titleId:t})),tempRateUpdateLogRef:async(t,e)=>{c(`tmp-rating-add-${e}-${t}`)}}}},87961:function(t,e,a){a.d(e,{S:function(){return r}});var i=a(19596);let r=t=>(0,i.css)(["@supports (-webkit-line-clamp:","){display:-webkit-box;-webkit-line-clamp:",";-webkit-box-orient:vertical;overflow:hidden;}"],t,t)}}]);
