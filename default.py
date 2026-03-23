@@ -67,6 +67,343 @@ def save_plot_cache(cache):
     with open(PLOT_CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
+def parse_stream_tags_from_filename(filename):
+    """
+    Suy ra tag hinh anh va am thanh tu ten file Fshare.
+    """
+    basename = os.path.basename(filename or '')
+    name_no_ext = re.sub(r'\.(mkv|mp4|avi|wmv|iso|ts|m2ts|mov|mpg|mpeg)$', '', basename, flags=re.IGNORECASE)
+    normalized = name_no_ext.upper().replace('_', ' ')
+
+    video_tag = []
+    audio_tag = []
+    video_stream = {}
+    audio_stream = {}
+    video_resolution = ''
+    video_source = ''
+    video_codec_label = ''
+    hdr_label = ''
+    hdr_type = ''
+    audio_codec_label = ''
+    audio_channels_label = ''
+    audio_language = []
+    audio_object = ''
+    audio_profile = ''
+
+    resolution_patterns = [
+        (r'(?<!\d)(2160P|4K)(?!\d)|\bUHD\b', ('2160p', 3840, 2160)),
+        (r'(?<!\d)1080P(?!\d)', ('1080p', 1920, 1080)),
+        (r'(?<!\d)720P(?!\d)', ('720p', 1280, 720)),
+        (r'(?<!\d)576P(?!\d)', ('576p', 1024, 576)),
+        (r'(?<!\d)480P(?!\d)', ('480p', 854, 480)),
+    ]
+    for pattern, (label, width, height) in resolution_patterns:
+        if re.search(pattern, normalized):
+            video_tag.append(label)
+            video_resolution = label
+            video_stream.update({'width': width, 'height': height})
+            break
+
+    source_patterns = [
+        (r'REMUX', 'REMUX'),
+        (r'BLU[.\- ]?RAY|BDRIP|BRRIP|BDMV', 'BluRay'),
+        (r'WEB[.\- ]?DL|WEB[.\- ]?RIP|WEBDL', 'WEB-DL'),
+        (r'HDTV', 'HDTV'),
+        (r'DVDRIP', 'DVDRip'),
+        (r'ISO|M2TS', 'ISO'),
+        (r'HDCAM|CAM', 'CAM'),
+    ]
+    for pattern, label in source_patterns:
+        if re.search(pattern, normalized):
+            video_tag.append(label)
+            video_source = label
+            break
+
+    service_patterns = [
+        (r'(?<![A-Z])NF(?![A-Z])|NETFLIX', 'NF'),
+        (r'AMZN|AMAZON', 'AMZN'),
+        (r'DSNP|DISNEY', 'DSNP'),
+        (r'HMAX|MAX', 'HMAX'),
+    ]
+    for pattern, label in service_patterns:
+        if re.search(pattern, normalized):
+            video_tag.append(label)
+            break
+
+    codec_patterns = [
+        (r'X265|H[.\- _]?265|HEVC', ('HEVC', 'hevc')),
+        (r'X264|H[.\- _]?264|AVC', ('H.264', 'h264')),
+        (r'VC[.\- ]?1', ('VC-1', 'vc1')),
+        (r'AV1', ('AV1', 'av1')),
+    ]
+    for pattern, (label, codec) in codec_patterns:
+        if re.search(pattern, normalized):
+            video_tag.append(label)
+            video_codec_label = label
+            video_stream['codec'] = codec
+            break
+
+    hdr_matches = []
+    hdr_patterns = [
+        (r'HDR10\+', 'HDR10+'),
+        (r'DOLBY[.\- ]?VISION|DO?VI| DV ', 'DV'),
+        (r'HDR10', 'HDR10'),
+        (r'(?<!SDR)HDR(?!IP)', 'HDR'),
+    ]
+    for pattern, label in hdr_patterns:
+        if re.search(pattern, f" {normalized} "):
+            hdr_matches.append(label)
+            video_tag.append(label)
+    if hdr_matches:
+        hdr_label = ' '.join(dict.fromkeys(hdr_matches))
+        if 'DV' in hdr_matches:
+            hdr_type = 'dolbyvision'
+        elif 'HDR10+' in hdr_matches or 'HDR10' in hdr_matches or 'HDR' in hdr_matches:
+            hdr_type = 'hdr10'
+
+    if re.search(r'(?<![A-Z])HLG(?![A-Z])', normalized):
+        video_tag.append('HLG')
+        hdr_matches.append('HLG')
+        hdr_type = 'hlg'
+        hdr_label = ' '.join(dict.fromkeys(hdr_matches))
+
+    bit_depth_match = re.search(r'(10|12|8)BIT', normalized)
+    if bit_depth_match:
+        video_tag.append(f"{bit_depth_match.group(1)}bit")
+
+    if re.search(r'\bHYBRID\b', normalized):
+        video_tag.append('Hybrid')
+    if re.search(r'(?<![A-Z0-9])3D(?![A-Z0-9])|HSBS|HOU|SBS', normalized):
+        video_tag.append('3D')
+
+    if re.search(r'ATMOS', normalized):
+        audio_object = 'Atmos'
+
+    if re.search(r'DTS[.\- ]?X', normalized):
+        audio_profile = 'DTS:X'
+
+    audio_codec_patterns = [
+        (r'TRUEHD', 'TrueHD'),
+        (r'DTS[.\- ]?X', 'DTS:X'),
+        (r'DTS[.\- ]?HD[.\- ]?MA', 'DTS-HD MA'),
+        (r'DTS[.\- ]?HD', 'DTS-HD'),
+        (r'(?<!TRUE)DTS(?![A-Z])', 'DTS'),
+        (r'LPCM|PCM', 'LPCM'),
+        (r'DDP[.\- ]?(7\.1|5\.1|2\.0)?|EAC3', 'DDP'),
+        (r'DD[.\- ]?(7\.1|5\.1|2\.0)?|AC3', 'DD'),
+        (r'AAC[.\- ]?(7\.1|5\.1|2\.0)?', 'AAC'),
+        (r'FLAC', 'FLAC'),
+        (r'MP3', 'MP3'),
+    ]
+    for pattern, label in audio_codec_patterns:
+        if re.search(pattern, normalized):
+            audio_tag.append(label)
+            audio_codec_label = label
+            codec_map = {
+                'TrueHD': 'truehd',
+                'DTS-HD MA': 'dtshd_ma',
+                'DTS-HD': 'dtshd_hra',
+                'DTS:X': 'dtsx',
+                'DTS': 'dts',
+                'LPCM': 'pcm',
+                'DDP': 'eac3',
+                'DD': 'ac3',
+                'AAC': 'aac',
+                'FLAC': 'flac',
+                'MP3': 'mp3',
+            }
+            audio_stream['codec'] = codec_map.get(label, label.lower().replace('-', ''))
+            break
+
+    if hdr_type:
+        video_stream['hdrtype'] = hdr_type
+
+    channels_match = re.search(r'(?<!\d)(7\.1|5\.1|2\.0|1\.0|MONO|2CH|6CH|8CH)(?!\d)', normalized)
+    if channels_match:
+        raw_channels = channels_match.group(1)
+        channel_map = {
+            '7.1': ('7.1', 8),
+            '5.1': ('5.1', 6),
+            '2.0': ('2.0', 2),
+            '1.0': ('1.0', 1),
+            'MONO': ('1.0', 1),
+            '2CH': ('2.0', 2),
+            '6CH': ('5.1', 6),
+            '8CH': ('7.1', 8),
+        }
+        channel_label, channels = channel_map.get(raw_channels, (raw_channels, 0))
+        audio_tag.append(channel_label)
+        audio_channels_label = channel_label
+        if channels:
+            audio_stream['channels'] = channels
+
+    if audio_object:
+        audio_tag.append('Atmos')
+
+    if audio_object:
+        if audio_codec_label == 'TrueHD':
+            audio_profile = 'TrueHD Atmos'
+        elif audio_codec_label == 'DDP':
+            audio_profile = 'DDP Atmos'
+        elif audio_codec_label == 'DD':
+            audio_profile = 'DD Atmos'
+        elif not audio_profile:
+            audio_profile = audio_object
+
+    language_patterns = [
+        (r'VIETSUB|SUB[.\- ]?VIET', 'VieSub'),
+        (r'HARD[.\- ]?SUB|HARDSUB', 'VieSub'),
+        (r'THUYET[.\- ]?MINH|\bTM\b', 'TM'),
+        (r'USLT', 'USLT'),
+        (r'(?<![A-Z])VIE(?![A-Z])|VIET', 'ViE'),
+        (r'(?<![A-Z])ENG(?![A-Z])|ENGLISH', 'ENG'),
+        (r'\bMULTI\b', 'Multi'),
+        (r'\bDUAL\b', 'Dual'),
+        (r'\bAI\b', 'AI'),
+    ]
+    for pattern, label in language_patterns:
+        if re.search(pattern, normalized):
+            audio_tag.append(label)
+            audio_language.append(label)
+
+    video_tag = list(dict.fromkeys(video_tag))
+    audio_tag = list(dict.fromkeys(audio_tag))
+
+    return {
+        'video_tag': ' '.join(video_tag),
+        'audio_tag': ' '.join(audio_tag),
+        'video_stream': video_stream,
+        'audio_stream': audio_stream,
+        'video_resolution': video_resolution,
+        'video_source': video_source,
+        'video_codec': video_codec_label,
+        'hdr': hdr_label,
+        'hdr_type': hdr_type,
+        'audio_codec': audio_codec_label,
+        'audio_channels': audio_channels_label,
+        'audio_language': ' '.join(audio_language),
+        'audio_object': audio_object,
+        'audio_profile': audio_profile,
+    }
+
+def make_safe_media_name(title, movie_info=None):
+    def parse_language_prefix(filename):
+        langs = []
+        prefix_match = re.match(r'^\s*\((.*?)\)\s*', filename)
+        if prefix_match:
+            prefix = prefix_match.group(1).upper()
+            if any(x in prefix for x in ['THUYET MINH', 'TM']):
+                langs.append('TM')
+            if any(x in prefix for x in ['SUB VIET', 'SUBVIET', 'VIETSUB']):
+                langs.append('VieSub')
+            filename = filename[prefix_match.end():]
+        return filename, langs
+
+    def normalize_tech_part(tech_part):
+        normalize_map = {
+            '2160P': '2160p', '1080P': '1080p', '720P': '720p',
+            '480P': '480p', '576P': '576p',
+            'BLURAY': 'BluRay', 'BLU-RAY': 'BluRay', 'BDRIP': 'BDRip',
+            'WEBRIP': 'WEBRip', 'WEB-DL': 'WEB-DL', 'WEBDL': 'WEB-DL',
+            'HDTV': 'HDTV', 'DVDRIP': 'DVDRip', 'REMUX': 'REMUX',
+            'AMZN': 'AMZN', 'NF': 'NF', 'HMAX': 'HMAX',
+            'DSNP': 'DSNP', 'MA': 'MA', 'UHD': 'UHD',
+            'X264': 'x264', 'X265': 'x265',
+            'H264': 'H.264', 'H.264': 'H.264',
+            'H265': 'H.265', 'H.265': 'H.265',
+            'HEVC': 'HEVC', 'AVC': 'AVC', 'AV1': 'AV1',
+            'DTS-HD': 'DTS-HD', 'DTS-HD-MA': 'DTS-HD.MA', 'DTSX': 'DTS-X',
+            'DTS:X': 'DTS-X', 'DTS-X': 'DTS-X', 'DTS': 'DTS', 'TRUEHD': 'TrueHD',
+            'ATMOS': 'Atmos', 'DD5.1': 'DD5.1', 'DDP5.1': 'DDP5.1',
+            'DDP': 'DDP', 'AAC': 'AAC', 'AC3': 'AC3',
+            'FLAC': 'FLAC', 'MP3': 'MP3',
+            'HDR10+': 'HDR10+', 'HDR10': 'HDR10', 'HDR': 'HDR',
+            'DOLBY VISION': 'DV', 'DV': 'DV', 'HLG': 'HLG',
+            'VIE': 'ViE', 'ENG': 'ENG', 'VIET': 'ViE',
+            '10BIT': '10bit', '8BIT': '8bit',
+        }
+        tokens = tech_part.split('.')
+        normalized = []
+        for token in tokens:
+            upper = token.upper()
+            if upper in normalize_map:
+                normalized.append(normalize_map[upper])
+            else:
+                normalized.append(token)
+        return '.'.join(normalized)
+
+    def parse_media_info(filename):
+        info = {}
+        year_match = re.search(r'\b(19|20)\d{2}\b', filename)
+        info['year'] = year_match.group(0) if year_match else ''
+
+        filename_clean = re.sub(r'\(((19|20)\d{2})\)', r'\1', filename)
+        filename_clean = re.sub(r'\(.*?\)', '', filename_clean)
+        filename_clean = re.sub(r'^\d+\.\s*', '', filename_clean)
+        filename_clean = re.sub(r'\s+', ' ', filename_clean).strip()
+
+        year_match2 = re.search(r'\b(19|20)\d{2}\b', filename_clean)
+        if year_match2:
+            title_part = filename_clean[:year_match2.start()]
+        else:
+            title_part = filename_clean
+        title_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', title_part, flags=re.IGNORECASE)
+        title_part = re.sub(r'[._]', ' ', title_part).strip()
+        title_part = re.sub(r'[\s\-]+$', '', title_part)
+        info['parsed_title'] = title_part
+        return info
+
+    clean_title, lang_tags = parse_language_prefix(title)
+    media = parse_media_info(clean_title)
+
+    movie_title = ''
+    year = media['year']
+    if movie_info:
+        if movie_info.get('title'):
+            movie_title = movie_info.get('title')
+        year = movie_info.get('year', '') or year
+        if movie_info.get('season') and movie_info.get('episode') and movie_info.get('tvshowtitle'):
+            movie_title = movie_info.get('tvshowtitle')
+    if not movie_title:
+        movie_title = media['parsed_title']
+
+    clean_for_tech = re.sub(r'\(((19|20)\d{2})\)', r'\1', clean_title)
+    clean_for_tech = re.sub(r'\(.*?\)', '', clean_for_tech)
+    clean_for_tech = re.sub(r'^\d+\.\s*', '', clean_for_tech)
+    clean_for_tech = re.sub(r'\s+', ' ', clean_for_tech).strip()
+
+    year_match = re.search(r'\b(19|20)\d{2}\b', clean_for_tech)
+    season_match = re.search(r'\bS\d{2}E\d{2}\b', clean_for_tech, re.IGNORECASE)
+    if year_match:
+        tech_part = clean_for_tech[year_match.start():]
+        tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
+        tech_part = tech_part.replace(' ', '.')
+        tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
+        tech_part = normalize_tech_part(tech_part)
+    elif season_match:
+        tech_part = clean_for_tech[season_match.start():]
+        tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
+        tech_part = tech_part.replace(' ', '.')
+        tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
+        tech_part = normalize_tech_part(tech_part)
+    else:
+        tech_part = ''
+
+    name_part = movie_title.replace(' ', '.')
+    if tech_part and lang_tags:
+        year_in_tech = re.search(r'\b(19|20)\d{2}\b', tech_part)
+        if year_in_tech:
+            insert_pos = year_in_tech.end()
+            tech_part = tech_part[:insert_pos] + '.' + '.'.join(lang_tags) + tech_part[insert_pos:]
+        else:
+            tech_part = '.'.join(lang_tags) + '.' + tech_part
+
+    safe_name = f"{name_part}.{tech_part}" if tech_part else name_part
+    safe_name = safe_name.replace(':', '-')
+    safe_name = re.sub(r'[\\/*?"<>|()\[\]]', '_', safe_name)
+    safe_name = re.sub(r'_+', '_', safe_name)
+    return safe_name.strip('_').strip('.')
+
 def get_vietnamese_plot(title, year, refresh=False):
     """
     Lấy plot tiếng Việt từ Wikipedia và lưu cache local.
@@ -241,13 +578,14 @@ def create_strm_file(title, url, movie_info=None):
             'H265': 'H.265', 'H.265': 'H.265',
             'HEVC': 'HEVC', 'AVC': 'AVC', 'AV1': 'AV1',
             # Codec audio
-            'DTS-HD': 'DTS-HD', 'DTS': 'DTS', 'TRUEHD': 'TrueHD',
+            'DTS-HD': 'DTS-HD', 'DTS-HD-MA': 'DTS-HD.MA', 'DTSX': 'DTS-X',
+            'DTS:X': 'DTS-X', 'DTS-X': 'DTS-X', 'DTS': 'DTS', 'TRUEHD': 'TrueHD',
             'ATMOS': 'Atmos', 'DD5.1': 'DD5.1', 'DDP5.1': 'DDP5.1',
             'DDP': 'DDP', 'AAC': 'AAC', 'AC3': 'AC3',
             'FLAC': 'FLAC', 'MP3': 'MP3',
             # HDR
             'HDR10+': 'HDR10+', 'HDR10': 'HDR10', 'HDR': 'HDR',
-            'DOLBY VISION': 'DV', 'DV': 'DV',
+            'DOLBY VISION': 'DV', 'DV': 'DV', 'HLG': 'HLG',
             # Ngôn ngữ
             'VIE': 'ViE', 'ENG': 'ENG', 'VIET': 'ViE',
             # Bit depth
@@ -317,8 +655,15 @@ def create_strm_file(title, url, movie_info=None):
 
     # Lấy phần kỹ thuật từ năm trở đi
     year_match = re.search(r'\b(19|20)\d{2}\b', clean_for_tech)
+    season_match = re.search(r'\bS\d{2}E\d{2}\b', clean_for_tech, re.IGNORECASE)
     if year_match:
         tech_part = clean_for_tech[year_match.start():]
+        tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
+        tech_part = tech_part.replace(' ', '.')
+        tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
+        tech_part = normalize_tech_part(tech_part)
+    elif season_match:
+        tech_part = clean_for_tech[season_match.start():]
         tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
         tech_part = tech_part.replace(' ', '.')
         tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
@@ -337,10 +682,7 @@ def create_strm_file(title, url, movie_info=None):
         else:
             tech_part = '.'.join(lang_tags) + '.' + tech_part
 
-    safe_title = f"{name_part}.{tech_part}" if tech_part else name_part
-    safe_title = re.sub(r'[\\/*?:"<>|()\[\]]', '_', safe_title)
-    safe_title = re.sub(r'_+', '_', safe_title)
-    safe_title = safe_title.strip('_').strip('.')
+    safe_title = make_safe_media_name(title, movie_info)
 
 # Lấy thư mục đã lưu lần trước
     dialog = xbmcgui.Dialog()
@@ -463,6 +805,9 @@ def download_fshare(fshare_url, title, url, movie_info=None):
 
     # --- Tạo tên file theo quy tắc .strm ---
     def make_safe_name(title, movie_info):
+        return make_safe_media_name(title, movie_info)
+        """
+
         def parse_language_prefix(filename):
             langs = []
             prefix_match = re.match(r'^\s*\((.*?)\)\s*', filename)
@@ -556,6 +901,8 @@ def download_fshare(fshare_url, title, url, movie_info=None):
         return safe_name.strip('_').strip('.')
 
     # --- Kiểm tra fshare_url ---
+        """
+
     if not fshare_url:
         # Thử extract từ plugin URL
         fshare_match = re.search(r'url=(https?://[^\s&]+)', url)
@@ -988,8 +1335,11 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
     for i, link_info in enumerate(links):
         size = link_info.get('size', 0)
         size_str = f"{size/(1024**3):.2f} GB" if size >= 1024**3 else f"{size/(1024**2):.2f} MB"
+        stream_tags = parse_stream_tags_from_filename(link_info.get('title', ''))
+        tag_parts = [tag for tag in [stream_tags.get('video_tag', ''), stream_tags.get('audio_tag', '')] if tag]
+        tag_label = f" [{ ' | '.join(tag_parts) }]" if tag_parts else ''
 
-        title_label = f"{i+1}: {link_info['title']} - ({size_str})"
+        title_label = f"{i+1}: {link_info['title']}{tag_label} - ({size_str})"
 
         # URL gọi qua action play_trakt để set script.trakt.ids trước khi play
         play_params = {
@@ -998,6 +1348,7 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
             'imdb': str(imdb_id) if imdb_id else '',
             'tmdb': str(tmdb_id) if tmdb_id else '',
             'title': movie_title,
+            'filename': link_info.get('title', ''),
             'year': str(movie_year) if movie_year else '',
             'season': str(season) if season else '',
             'episode': str(episode) if episode else '',
@@ -1037,6 +1388,103 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
         if poster_path:
             list_item.setArt({'thumb': poster_path, 'poster': poster_path, 'fanart': poster_path, 'icon': poster_path})
 
+        video_stream = stream_tags.get('video_stream', {})
+        audio_stream = stream_tags.get('audio_stream', {})
+        if video_stream:
+            list_item.addStreamInfo('video', video_stream)
+        if audio_stream:
+            list_item.addStreamInfo('audio', audio_stream)
+
+        prop_map = {
+            'video_tag': stream_tags.get('video_tag', ''),
+            'audio_tag': stream_tags.get('audio_tag', ''),
+            'VideoResolution': stream_tags.get('video_resolution', ''),
+            'VideoCodec': stream_tags.get('video_codec', ''),
+            'VideoSource': stream_tags.get('video_source', ''),
+            'VideoHDR': stream_tags.get('hdr', ''),
+            'HdrType': stream_tags.get('hdr_type', ''),
+            'AudioCodec': stream_tags.get('audio_codec', ''),
+            'AudioChannels': stream_tags.get('audio_channels', ''),
+            'AudioLanguage': stream_tags.get('audio_language', ''),
+            'AudioProfile': stream_tags.get('audio_profile', ''),
+            'AudioObject': stream_tags.get('audio_object', ''),
+            'AudioAtmos': stream_tags.get('audio_object', ''),
+            'AudioCodec2': stream_tags.get('audio_object', ''),
+            'AudioCodecAlt': stream_tags.get('audio_object', ''),
+            'AudioCodecExtra': stream_tags.get('audio_profile', ''),
+            'AudioCodecCombined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
+            'video_resolution': stream_tags.get('video_resolution', ''),
+            'video_codec': stream_tags.get('video_codec', ''),
+            'video_source': stream_tags.get('video_source', ''),
+            'video_hdr': stream_tags.get('hdr', ''),
+            'hdr_type': stream_tags.get('hdr_type', ''),
+            'audio_codec': stream_tags.get('audio_codec', ''),
+            'audio_channels': stream_tags.get('audio_channels', ''),
+            'audio_language': stream_tags.get('audio_language', ''),
+            'audio_profile': stream_tags.get('audio_profile', ''),
+            'audio_object': stream_tags.get('audio_object', ''),
+            'audio_codec2': stream_tags.get('audio_object', ''),
+            'audio_codec_alt': stream_tags.get('audio_object', ''),
+            'audio_codec_extra': stream_tags.get('audio_profile', ''),
+            'audio_codec_combined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
+            'media.hdr': stream_tags.get('hdr', ''),
+            'media.source': stream_tags.get('video_source', ''),
+            'media.hdrtype': stream_tags.get('hdr_type', ''),
+            'media.audio': stream_tags.get('audio_codec', ''),
+            'media.audioprofile': stream_tags.get('audio_profile', ''),
+            'media.audioobject': stream_tags.get('audio_object', ''),
+            'media.audio2': stream_tags.get('audio_object', ''),
+            'media.audioextra': stream_tags.get('audio_profile', ''),
+            'VideoPlayer.VideoResolution': stream_tags.get('video_resolution', ''),
+            'VideoPlayer.VideoCodec': stream_tags.get('video_codec', ''),
+            'VideoPlayer.AudioCodec': stream_tags.get('audio_codec', ''),
+            'VideoPlayer.AudioChannels': stream_tags.get('audio_channels', ''),
+            'VideoPlayer.HDRType': stream_tags.get('hdr', ''),
+            'VideoPlayer.HdrType': stream_tags.get('hdr_type', ''),
+            'VideoPlayer.AudioProfile': stream_tags.get('audio_profile', ''),
+            'VideoPlayer.AudioObject': stream_tags.get('audio_object', ''),
+            'VideoPlayer.AudioCodec2': stream_tags.get('audio_object', ''),
+            'VideoPlayer.AudioCodecCombined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
+            'VideoPlayer.VideoAspect': '',
+            'VideoInfo.VideoResolution': stream_tags.get('video_resolution', ''),
+            'VideoInfo.VideoCodec': stream_tags.get('video_codec', ''),
+            'VideoInfo.AudioCodec': stream_tags.get('audio_codec', ''),
+            'VideoInfo.AudioChannels': stream_tags.get('audio_channels', ''),
+            'VideoInfo.HDRType': stream_tags.get('hdr', ''),
+            'VideoInfo.HdrType': stream_tags.get('hdr_type', ''),
+            'VideoInfo.AudioProfile': stream_tags.get('audio_profile', ''),
+            'VideoInfo.AudioObject': stream_tags.get('audio_object', ''),
+            'VideoInfo.AudioCodec2': stream_tags.get('audio_object', ''),
+            'VideoInfo.AudioCodecCombined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
+            'video.resolution': stream_tags.get('video_resolution', ''),
+            'video.codec': stream_tags.get('video_codec', ''),
+            'video.source': stream_tags.get('video_source', ''),
+            'video.hdr': stream_tags.get('hdr', ''),
+            'audio.codec': stream_tags.get('audio_codec', ''),
+            'audio.channels': stream_tags.get('audio_channels', ''),
+            'audio.language': stream_tags.get('audio_language', ''),
+            'audio.profile': stream_tags.get('audio_profile', ''),
+            'audio.object': stream_tags.get('audio_object', ''),
+            'audio.codec2': stream_tags.get('audio_object', ''),
+            'audio.codec_combined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
+            'media.resolution': stream_tags.get('video_resolution', ''),
+            'media.codec': stream_tags.get('video_codec', ''),
+            'media.channels': stream_tags.get('audio_channels', ''),
+        }
+        for prop_name, prop_value in prop_map.items():
+            if prop_value:
+                list_item.setProperty(prop_name, str(prop_value))
+
+        flag_props = {
+            'HasAtmos': 'true' if stream_tags.get('audio_object') == 'Atmos' else '',
+            'AudioIsAtmos': 'true' if stream_tags.get('audio_object') == 'Atmos' else '',
+            'HasDTSX': 'true' if stream_tags.get('audio_codec') == 'DTS:X' or stream_tags.get('audio_profile') == 'DTS:X' else '',
+            'AudioIsDTSX': 'true' if stream_tags.get('audio_codec') == 'DTS:X' or stream_tags.get('audio_profile') == 'DTS:X' else '',
+        }
+        for prop_name, prop_value in flag_props.items():
+            if prop_value:
+                list_item.setProperty(prop_name, prop_value)
+
         list_item.setProperty('IsPlayable', 'true')
 
         # Context menu
@@ -1050,6 +1498,9 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
             'tmdb': str(tmdb_id) if tmdb_id else '',
             'movie_plot': plot_text,
             'movie_rating': movie_info_local.get('imdb_rating', '') if movie_info_local else '',
+            'season': str(season) if season else '',
+            'episode': str(episode) if episode else '',
+            'tvshowtitle': tvshowtitle or '',
         }
         strm_url = sys.argv[0] + '?' + urllib.parse.urlencode(strm_params)
 
@@ -1215,6 +1666,9 @@ def router(paramstring):
                 'tmdb_id': params.get('tmdb', ''),
                 'plot': params.get('movie_plot', ''),
                 'rating': params.get('movie_rating', ''),
+                'season': params.get('season', ''),
+                'episode': params.get('episode', ''),
+                'tvshowtitle': params.get('tvshowtitle', ''),
             }            
             create_strm_file(params.get('title', ''), params.get('url', ''), info)
         elif action == 'play_trakt':
