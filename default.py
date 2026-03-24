@@ -13,6 +13,7 @@ import time
 # ID của addon (thư mục của addon)
 ADDON_ID = 'plugin.video.myimdbfshare'
 addon_handle = int(sys.argv[1])
+ADDON = xbmcaddon.Addon(ADDON_ID)
 
 # Đường dẫn đến tệp HTML đã tải về
 IMDB_HTML_FILE = os.path.join(xbmcvfs.translatePath(f'special://home/addons/{ADDON_ID}/resources'), 'IMDb Top 250 movies.html')
@@ -23,6 +24,7 @@ FSHARE_SEARCH_API_URL = "https://api.timfshare.com/v1/string-query-search?query=
 TMDB_API_KEY = 'YOUR_TMDB_API_KEY'  # Thay bằng API key của bạn
 
 PLOT_CACHE_FILE = os.path.join(xbmcvfs.translatePath(f'special://home/addons/{ADDON_ID}/resources'), 'plots.json')
+TMDB_LOOKUP_CACHE_FILE = os.path.join(xbmcvfs.translatePath(f'special://home/addons/{ADDON_ID}/resources'), 'tmdb_lookup_cache.json')
 
 STRM_CONFIG_FILE = os.path.join(xbmcvfs.translatePath(f'special://home/addons/{ADDON_ID}/resources'), 'strm_config.json')
 
@@ -66,6 +68,168 @@ def load_plot_cache():
 def save_plot_cache(cache):
     with open(PLOT_CACHE_FILE, 'w', encoding='utf-8') as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def load_tmdb_lookup_cache():
+    if os.path.exists(TMDB_LOOKUP_CACHE_FILE):
+        try:
+            with open(TMDB_LOOKUP_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_tmdb_lookup_cache(cache):
+    with open(TMDB_LOOKUP_CACHE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+
+def get_tmdb_api_key():
+    try:
+        addon_key = ADDON.getSetting('tmdb_api_key')
+        if addon_key:
+            return addon_key.strip()
+    except Exception:
+        pass
+
+    try:
+        tmdb_helper = xbmcaddon.Addon('plugin.video.themoviedb.helper')
+        for setting_id in ['tmdb_apikey', 'tmdb_api_key', 'api_key']:
+            value = tmdb_helper.getSetting(setting_id)
+            if value:
+                return value.strip()
+    except Exception:
+        pass
+
+    return ''
+
+
+def lookup_tmdb_movie(api_key, title, year=None):
+    if not api_key or not title:
+        return {}
+
+    params = {
+        'api_key': api_key,
+        'query': title,
+        'language': 'en-US',
+    }
+    if year:
+        params['year'] = str(year)
+
+    resp = requests.get('https://api.themoviedb.org/3/search/movie', params=params, timeout=5)
+    resp.raise_for_status()
+    results = resp.json().get('results', [])
+    if not results:
+        return {}
+
+    movie = results[0]
+    movie_id = movie.get('id')
+    imdb_id = ''
+
+    if movie_id:
+        ext_resp = requests.get(
+            f'https://api.themoviedb.org/3/movie/{movie_id}/external_ids',
+            params={'api_key': api_key},
+            timeout=5
+        )
+        if ext_resp.ok:
+            imdb_id = ext_resp.json().get('imdb_id', '')
+
+    return {
+        'mediatype': 'movie',
+        'title': movie.get('title', title),
+        'year': (movie.get('release_date', '') or '')[:4],
+        'tmdb_id': str(movie_id or ''),
+        'imdb_id': imdb_id or '',
+        'plot': movie.get('overview', ''),
+        'rating': str(movie.get('vote_average', '') or ''),
+        'poster': movie.get('poster_path', ''),
+        'fanart': movie.get('backdrop_path', ''),
+    }
+
+
+def lookup_tmdb_episode(api_key, tvshowtitle, season, episode):
+    if not api_key or not tvshowtitle:
+        return {}
+
+    resp = requests.get(
+        'https://api.themoviedb.org/3/search/tv',
+        params={
+            'api_key': api_key,
+            'query': tvshowtitle,
+            'language': 'en-US',
+        },
+        timeout=5
+    )
+    resp.raise_for_status()
+    results = resp.json().get('results', [])
+    if not results:
+        return {}
+
+    show = results[0]
+    show_id = show.get('id')
+    imdb_id = ''
+
+    if show_id:
+        ext_resp = requests.get(
+            f'https://api.themoviedb.org/3/tv/{show_id}/external_ids',
+            params={'api_key': api_key},
+            timeout=5
+        )
+        if ext_resp.ok:
+            imdb_id = ext_resp.json().get('imdb_id', '')
+
+    ep_resp = requests.get(
+        f'https://api.themoviedb.org/3/tv/{show_id}/season/{int(season)}/episode/{int(episode)}',
+        params={'api_key': api_key, 'language': 'en-US'},
+        timeout=5
+    )
+    ep_resp.raise_for_status()
+    ep = ep_resp.json()
+
+    return {
+        'mediatype': 'episode',
+        'title': ep.get('name', f"{tvshowtitle} S{int(season):02d}E{int(episode):02d}"),
+        'tvshowtitle': show.get('name', tvshowtitle),
+        'year': (show.get('first_air_date', '') or '')[:4],
+        'season': str(season),
+        'episode': str(episode),
+        'tmdb_id': str(show_id or ''),
+        'imdb_id': imdb_id or '',
+        'plot': ep.get('overview', '') or show.get('overview', ''),
+        'rating': str(ep.get('vote_average', '') or ''),
+        'poster': show.get('poster_path', ''),
+        'fanart': show.get('backdrop_path', ''),
+        'thumb': ep.get('still_path', ''),
+    }
+
+
+def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, episode=None):
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return {}
+
+    is_episode = bool(season and episode and tvshowtitle)
+    lookup_title = tvshowtitle if is_episode else title
+    cache_key = f"{'tv' if is_episode else 'movie'}|{(lookup_title or '').lower()}|{year or ''}|{season or ''}|{episode or ''}"
+
+    cache = load_tmdb_lookup_cache()
+    if cache_key in cache:
+        return cache[cache_key]
+
+    try:
+        if is_episode:
+            data = lookup_tmdb_episode(api_key, tvshowtitle, season, episode)
+        else:
+            data = lookup_tmdb_movie(api_key, title, year)
+        if data:
+            cache[cache_key] = data
+            save_tmdb_lookup_cache(cache)
+        return data or {}
+    except Exception as e:
+        xbmc.log(f"TMDb lookup error: {e}", level=xbmc.LOGWARNING)
+        return {}
 
 def parse_stream_tags_from_filename(filename):
     """
@@ -286,10 +450,45 @@ def parse_stream_tags_from_filename(filename):
         'audio_profile': audio_profile,
     }
 
+
+def parse_media_identity_from_filename(filename, fallback_title=''):
+    basename = os.path.basename(filename or '')
+    name_no_ext = re.sub(r'\.(mkv|mp4|avi|wmv|iso|ts|m2ts|mov|mpg|mpeg)$', '', basename, flags=re.IGNORECASE)
+    name_no_ext = re.sub(r'^\s*\((.*?)\)\s*', '', name_no_ext)
+    name_no_ext = re.sub(r'^\d+\.\s*', '', name_no_ext)
+
+    season_episode_match = re.search(r'\bS(\d{1,2})E(\d{1,2})\b', name_no_ext, re.IGNORECASE)
+    year_match = re.search(r'\b(19|20)\d{2}\b', name_no_ext)
+
+    if season_episode_match:
+        title_part = name_no_ext[:season_episode_match.start()]
+    elif year_match:
+        title_part = name_no_ext[:year_match.start()]
+    else:
+        title_part = name_no_ext
+
+    title_part = re.sub(r'[._]+', ' ', title_part)
+    title_part = re.sub(r'\s+', ' ', title_part).strip(' -._')
+    parsed_title = title_part or (fallback_title or '').strip()
+
+    season = season_episode_match.group(1).zfill(2) if season_episode_match else ''
+    episode = season_episode_match.group(2).zfill(2) if season_episode_match else ''
+    year = year_match.group(0) if year_match else ''
+
+    return {
+        'is_episode': bool(season and episode),
+        'title': parsed_title,
+        'tvshowtitle': parsed_title if season and episode else '',
+        'year': year,
+        'season': season,
+        'episode': episode,
+        'display_title': f"{parsed_title} S{season}E{episode}" if season and episode and parsed_title else parsed_title,
+    }
+
 def make_safe_media_name(title, movie_info=None):
     def parse_language_prefix(filename):
         langs = []
-        prefix_match = re.match(r'^\s*\((.*?)\)\s*', filename)
+        prefix_match = re.match(r'^\s*\((.*?)\)\s*', filename or '')
         if prefix_match:
             prefix = prefix_match.group(1).upper()
             if any(x in prefix for x in ['THUYET MINH', 'TM']):
@@ -299,110 +498,164 @@ def make_safe_media_name(title, movie_info=None):
             filename = filename[prefix_match.end():]
         return filename, langs
 
-    def normalize_tech_part(tech_part):
+    def dotify(value):
+        value = re.sub(r'\s+', ' ', value or '').strip()
+        value = re.sub(r'[._]+', '.', value)
+        return value.replace(' ', '.').strip('.')
+
+    def normalize_tech_tokens(tokens):
         normalize_map = {
-            '2160P': '2160p', '1080P': '1080p', '720P': '720p',
+            '2160P': '2160p', '4K': '2160p', '1080P': '1080p', '720P': '720p',
             '480P': '480p', '576P': '576p',
-            'BLURAY': 'BluRay', 'BLU-RAY': 'BluRay', 'BDRIP': 'BDRip',
-            'WEBRIP': 'WEBRip', 'WEB-DL': 'WEB-DL', 'WEBDL': 'WEB-DL',
+            'BLURAY': 'BluRay', 'BLU-RAY': 'BluRay', 'BDRIP': 'BDRip', 'BRRIP': 'BDRip',
+            'WEBRIP': 'WEBRip', 'WEB-DL': 'WEB-DL', 'WEBDL': 'WEB-DL', 'WEB': 'WEB-DL',
             'HDTV': 'HDTV', 'DVDRIP': 'DVDRip', 'REMUX': 'REMUX',
-            'AMZN': 'AMZN', 'NF': 'NF', 'HMAX': 'HMAX',
-            'DSNP': 'DSNP', 'MA': 'MA', 'UHD': 'UHD',
-            'X264': 'x264', 'X265': 'x265',
-            'H264': 'H.264', 'H.264': 'H.264',
-            'H265': 'H.265', 'H.265': 'H.265',
-            'HEVC': 'HEVC', 'AVC': 'AVC', 'AV1': 'AV1',
+            'AMZN': 'AMZN', 'AMAZON': 'AMZN', 'NF': 'NF', 'NETFLIX': 'NF',
+            'HMAX': 'HMAX', 'MAX': 'MAX', 'DSNP': 'DSNP', 'DISNEY': 'DSNP',
+            'MA': 'MA', 'UHD': 'UHD',
+            'X264': 'H.264', 'AVC': 'H.264',
+            'X265': 'HEVC', 'H265': 'HEVC', 'H.265': 'HEVC', 'HEVC': 'HEVC',
+            'H264': 'H.264', 'H.264': 'H.264', 'AV1': 'AV1',
             'DTS-HD': 'DTS-HD', 'DTS-HD-MA': 'DTS-HD.MA', 'DTSX': 'DTS-X',
             'DTS:X': 'DTS-X', 'DTS-X': 'DTS-X', 'DTS': 'DTS', 'TRUEHD': 'TrueHD',
-            'ATMOS': 'Atmos', 'DD5.1': 'DD5.1', 'DDP5.1': 'DDP5.1',
-            'DDP': 'DDP', 'AAC': 'AAC', 'AC3': 'AC3',
+            'ATMOS': 'Atmos', 'DD5.1': 'DD5.1', 'DDP5.1': 'DDP5.1', 'DDP7.1': 'DDP7.1',
+            'DDP': 'DDP', 'AAC': 'AAC', 'AC3': 'AC3', 'EAC3': 'DDP',
             'FLAC': 'FLAC', 'MP3': 'MP3',
             'HDR10+': 'HDR10+', 'HDR10': 'HDR10', 'HDR': 'HDR',
-            'DOLBY VISION': 'DV', 'DV': 'DV', 'HLG': 'HLG',
-            'VIE': 'ViE', 'ENG': 'ENG', 'VIET': 'ViE',
+            'DOLBY': 'Dolby', 'VISION': 'Vision', 'DOLBYVISION': 'DV', 'DV': 'DV', 'HLG': 'HLG',
+            'VIE': 'ViE', 'ENG': 'ENG', 'VIET': 'ViE', 'VIETSUB': 'VieSub',
             '10BIT': '10bit', '8BIT': '8bit',
         }
-        tokens = tech_part.split('.')
         normalized = []
+        seen = set()
         for token in tokens:
-            upper = token.upper()
-            if upper in normalize_map:
-                normalized.append(normalize_map[upper])
-            else:
-                normalized.append(token)
-        return '.'.join(normalized)
+            cleaned = token.strip('.- _')
+            if not cleaned:
+                continue
+            upper = cleaned.upper()
+            normalized_token = normalize_map.get(upper, cleaned)
+            if normalized_token in ['Dolby', 'Vision']:
+                continue
+            if normalized_token not in seen:
+                normalized.append(normalized_token)
+                seen.add(normalized_token)
+        return normalized
 
     def parse_media_info(filename):
         info = {}
-        year_match = re.search(r'\b(19|20)\d{2}\b', filename)
+        basename = os.path.basename(filename or '')
+        basename = re.sub(r'\.(mkv|mp4|wmv|iso|ts|m2ts|avi|mov|mpg|mpeg)$', '', basename, flags=re.IGNORECASE)
+        season_episode_match = re.search(r'\bS(\d{1,2})E(\d{1,2})\b', basename, re.IGNORECASE)
+        year_match = re.search(r'\b(19|20)\d{2}\b', basename)
+        info['season'] = season_episode_match.group(1).zfill(2) if season_episode_match else ''
+        info['episode'] = season_episode_match.group(2).zfill(2) if season_episode_match else ''
+        info['season_episode'] = f"S{info['season']}E{info['episode']}" if season_episode_match else ''
         info['year'] = year_match.group(0) if year_match else ''
 
-        filename_clean = re.sub(r'\(((19|20)\d{2})\)', r'\1', filename)
+        filename_clean = re.sub(r'\(((19|20)\d{2})\)', r'\1', basename)
         filename_clean = re.sub(r'\(.*?\)', '', filename_clean)
         filename_clean = re.sub(r'^\d+\.\s*', '', filename_clean)
         filename_clean = re.sub(r'\s+', ' ', filename_clean).strip()
 
-        year_match2 = re.search(r'\b(19|20)\d{2}\b', filename_clean)
-        if year_match2:
-            title_part = filename_clean[:year_match2.start()]
-        else:
-            title_part = filename_clean
-        title_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', title_part, flags=re.IGNORECASE)
-        title_part = re.sub(r'[._]', ' ', title_part).strip()
+        title_end = len(filename_clean)
+        if season_episode_match:
+            title_end = min(title_end, season_episode_match.start())
+        if year_match:
+            title_end = min(title_end, year_match.start())
+        title_part = filename_clean[:title_end]
+        title_part = re.sub(r'[._]+', ' ', title_part).strip()
         title_part = re.sub(r'[\s\-]+$', '', title_part)
         info['parsed_title'] = title_part
+
+        tech_start = None
+        if season_episode_match:
+            tech_start = season_episode_match.start()
+        elif year_match:
+            tech_start = year_match.start()
+        info['tech_source'] = filename_clean[tech_start:] if tech_start is not None else ''
         return info
 
     clean_title, lang_tags = parse_language_prefix(title)
     media = parse_media_info(clean_title)
+    info = movie_info or {}
 
-    movie_title = ''
-    year = media['year']
-    if movie_info:
-        if movie_info.get('title'):
-            movie_title = movie_info.get('title')
-        year = movie_info.get('year', '') or year
-        if movie_info.get('season') and movie_info.get('episode') and movie_info.get('tvshowtitle'):
-            movie_title = movie_info.get('tvshowtitle')
-    if not movie_title:
-        movie_title = media['parsed_title']
+    season = str(info.get('season') or media.get('season') or '').zfill(2) if (info.get('season') or media.get('season')) else ''
+    episode = str(info.get('episode') or media.get('episode') or '').zfill(2) if (info.get('episode') or media.get('episode')) else ''
+    is_episode = bool(season and episode)
 
-    clean_for_tech = re.sub(r'\(((19|20)\d{2})\)', r'\1', clean_title)
-    clean_for_tech = re.sub(r'\(.*?\)', '', clean_for_tech)
-    clean_for_tech = re.sub(r'^\d+\.\s*', '', clean_for_tech)
-    clean_for_tech = re.sub(r'\s+', ' ', clean_for_tech).strip()
-
-    year_match = re.search(r'\b(19|20)\d{2}\b', clean_for_tech)
-    season_match = re.search(r'\bS\d{2}E\d{2}\b', clean_for_tech, re.IGNORECASE)
-    if year_match:
-        tech_part = clean_for_tech[year_match.start():]
-        tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
-        tech_part = tech_part.replace(' ', '.')
-        tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
-        tech_part = normalize_tech_part(tech_part)
-    elif season_match:
-        tech_part = clean_for_tech[season_match.start():]
-        tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
-        tech_part = tech_part.replace(' ', '.')
-        tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
-        tech_part = normalize_tech_part(tech_part)
+    base_title = ''
+    if is_episode:
+        base_title = info.get('tvshowtitle') or info.get('title') or media.get('parsed_title', '')
     else:
-        tech_part = ''
+        base_title = info.get('title') or media.get('parsed_title', '')
+    base_title = dotify(base_title)
 
-    name_part = movie_title.replace(' ', '.')
-    if tech_part and lang_tags:
-        year_in_tech = re.search(r'\b(19|20)\d{2}\b', tech_part)
-        if year_in_tech:
-            insert_pos = year_in_tech.end()
-            tech_part = tech_part[:insert_pos] + '.' + '.'.join(lang_tags) + tech_part[insert_pos:]
-        else:
-            tech_part = '.'.join(lang_tags) + '.' + tech_part
+    year = str(info.get('year') or media.get('year') or '').strip()
 
-    safe_name = f"{name_part}.{tech_part}" if tech_part else name_part
-    safe_name = safe_name.replace(':', '-')
-    safe_name = re.sub(r'[\\/*?"<>|()\[\]]', '_', safe_name)
+    info_tech_tokens = []
+    for value in [
+        info.get('video_resolution', ''),
+        info.get('video_source', ''),
+        info.get('hdr', ''),
+        info.get('video_codec', ''),
+        info.get('audio_codec', ''),
+        info.get('audio_channels', ''),
+        info.get('audio_profile', ''),
+        info.get('audio_object', ''),
+        info.get('audio_language', ''),
+    ]:
+        info_tech_tokens.extend(re.split(r'[.\s\-_]+', str(value or '')))
+
+    tech_tokens = normalize_tech_tokens(info_tech_tokens)
+    if not tech_tokens:
+        tech_tokens = normalize_tech_tokens(re.split(r'[.\s\-_]+', media.get('tech_source', '')))
+
+    identity_tokens = [base_title] if base_title else []
+    if is_episode:
+        identity_tokens.append(f"S{season}E{episode}")
+    elif year:
+        identity_tokens.append(f"({year})")
+
+    if lang_tags:
+        insert_pos = 1 if len(identity_tokens) > 1 else len(identity_tokens)
+        for tag in lang_tags:
+            if tag not in tech_tokens:
+                tech_tokens.append(tag)
+
+    safe_name = '.'.join([token for token in identity_tokens + tech_tokens if token])
+    safe_name = safe_name.replace(':', ' -')
+    safe_name = re.sub(r'[\\/*?"<>|\[\]]', '_', safe_name)
     safe_name = re.sub(r'_+', '_', safe_name)
-    return safe_name.strip('_').strip('.')
+    safe_name = re.sub(r'\.+', '.', safe_name)
+    return safe_name.strip('_. ')
+
+
+def scan_path_into_library(media_path):
+    try:
+        scan_query = json.dumps({
+            "jsonrpc": "2.0",
+            "method": "VideoLibrary.Scan",
+            "params": {
+                "directory": media_path,
+                "showdialogs": False
+            },
+            "id": 1
+        })
+        xbmc.executeJSONRPC(scan_query)
+
+        for _ in range(15):
+            xbmc.sleep(1000)
+            status_query = json.dumps({
+                "jsonrpc": "2.0",
+                "method": "XBMC.GetInfoBooleans",
+                "params": {"booleans": ["Library.IsScanning"]},
+                "id": 2
+            })
+            result = json.loads(xbmc.executeJSONRPC(status_query))
+            if not result.get('result', {}).get('Library.IsScanning', False):
+                break
+    except Exception as e:
+        xbmc.log(f"Library scan warning for {media_path}: {e}", level=xbmc.LOGWARNING)
 
 def get_vietnamese_plot(title, year, refresh=False):
     """
@@ -546,6 +799,45 @@ def search_fshare_manual():
             show_fshare_links(query, '')
 
 def create_strm_file(title, url, movie_info=None):
+    safe_title = make_safe_media_name(title, movie_info)
+
+    dialog = xbmcgui.Dialog()
+    saved_dir = load_strm_dir()
+
+    if saved_dir:
+        choice = dialog.yesno(
+            'ThÆ° má»¥c lÆ°u .strm',
+            f"DÃ¹ng láº¡i thÆ° má»¥c:\n{saved_dir}",
+            nolabel='Äá»•i thÆ° má»¥c',
+            yeslabel='DÃ¹ng láº¡i'
+        )
+        if choice:
+            strm_dir = saved_dir
+        else:
+            strm_dir = dialog.browse(3, 'Chá»n thÆ° má»¥c lÆ°u file .strm', 'files')
+            if not strm_dir:
+                return
+            save_strm_dir(strm_dir)
+    else:
+        strm_dir = dialog.browse(3, 'Chá»n thÆ° má»¥c lÆ°u file .strm', 'files')
+        if not strm_dir:
+            return
+        save_strm_dir(strm_dir)
+
+    strm_path = os.path.join(strm_dir, f"{safe_title}.strm")
+
+    try:
+        strm_file = xbmcvfs.File(strm_path, 'w')
+        strm_file.write(url)
+        strm_file.close()
+        xbmc.log(f"Created STRM: {strm_path}", level=xbmc.LOGINFO)
+        scan_path_into_library(strm_path)
+        xbmcgui.Dialog().ok("ThÃ nh cÃ´ng", f"ÄÃ£ táº¡o vÃ  thÃªm vÃ o library:\n{safe_title}.strm")
+    except Exception as e:
+        xbmcgui.Dialog().ok("Lá»—i", f"KhÃ´ng táº¡o Ä‘Æ°á»£c file:\n{e}")
+        xbmc.log(f"STRM error: {e}", level=xbmc.LOGERROR)
+    return
+
     """
     Tạo file .strm với tên chuẩn hóa để Kodi nhận diện chất lượng.
     """
@@ -1004,6 +1296,7 @@ def download_fshare(fshare_url, title, url, movie_info=None):
                 return
 
             xbmcgui.Dialog().ok('Download xong', f"Đã tải về:\n{safe_name}{ext}")
+            scan_path_into_library(dest_path)
             xbmc.log(f"Download complete: {dest_path}", level=xbmc.LOGINFO)
 
         except Exception as e:
@@ -1331,11 +1624,54 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
             plot_text = movie_info_local.get('plot', '')
 
     list_items = []
+    lookup_cache = {}
 
     for i, link_info in enumerate(links):
         size = link_info.get('size', 0)
         size_str = f"{size/(1024**3):.2f} GB" if size >= 1024**3 else f"{size/(1024**2):.2f} MB"
         stream_tags = parse_stream_tags_from_filename(link_info.get('title', ''))
+        identity_tags = parse_media_identity_from_filename(link_info.get('title', ''), movie_title)
+        effective_season = str(season or identity_tags.get('season') or '')
+        effective_episode = str(episode or identity_tags.get('episode') or '')
+        is_episode_item = bool(effective_season and effective_episode)
+        effective_tvshowtitle = tvshowtitle or identity_tags.get('tvshowtitle') or movie_title or identity_tags.get('title', '')
+        effective_title = movie_title or identity_tags.get('display_title') or identity_tags.get('title') or link_info.get('title', '')
+        effective_year = str(movie_year or identity_tags.get('year') or '')
+        if is_episode_item:
+            effective_title = f"{effective_tvshowtitle} S{effective_season.zfill(2)}E{effective_episode.zfill(2)}"
+        resolved_imdb_id = str(imdb_id) if imdb_id else ''
+        resolved_tmdb_id = str(tmdb_id) if tmdb_id else ''
+        resolved_plot = plot_text
+        resolved_rating = movie_info_local.get('imdb_rating', '') if movie_info_local else ''
+        resolved_poster_path = poster_path
+
+        lookup_key = f"{effective_title}|{effective_year}|{effective_tvshowtitle}|{effective_season}|{effective_episode}"
+        if not resolved_imdb_id and not resolved_tmdb_id:
+            if lookup_key not in lookup_cache:
+                lookup_cache[lookup_key] = lookup_tmdb_metadata(
+                    title=effective_title if not is_episode_item else '',
+                    year=effective_year,
+                    tvshowtitle=effective_tvshowtitle if is_episode_item else '',
+                    season=effective_season,
+                    episode=effective_episode,
+                )
+            tmdb_meta = lookup_cache.get(lookup_key, {})
+            if tmdb_meta:
+                resolved_imdb_id = tmdb_meta.get('imdb_id', '') or resolved_imdb_id
+                resolved_tmdb_id = tmdb_meta.get('tmdb_id', '') or resolved_tmdb_id
+                resolved_plot = tmdb_meta.get('plot', '') or resolved_plot
+                resolved_rating = tmdb_meta.get('rating', '') or resolved_rating
+
+                if is_episode_item:
+                    effective_title = tmdb_meta.get('title', '') or effective_title
+                    effective_tvshowtitle = tmdb_meta.get('tvshowtitle', '') or effective_tvshowtitle
+                else:
+                    effective_title = tmdb_meta.get('title', '') or effective_title
+                    effective_year = tmdb_meta.get('year', '') or effective_year
+
+                poster_rel = tmdb_meta.get('poster', '')
+                if poster_rel:
+                    resolved_poster_path = f"https://image.tmdb.org/t/p/w500{poster_rel}"
         tag_parts = [tag for tag in [stream_tags.get('video_tag', ''), stream_tags.get('audio_tag', '')] if tag]
         tag_label = f" [{ ' | '.join(tag_parts) }]" if tag_parts else ''
 
@@ -1345,14 +1681,14 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
         play_params = {
             'action': 'play_trakt',
             'url': link_info['url'],
-            'imdb': str(imdb_id) if imdb_id else '',
-            'tmdb': str(tmdb_id) if tmdb_id else '',
-            'title': movie_title,
+            'imdb': resolved_imdb_id,
+            'tmdb': resolved_tmdb_id,
+            'title': effective_title,
             'filename': link_info.get('title', ''),
-            'year': str(movie_year) if movie_year else '',
-            'season': str(season) if season else '',
-            'episode': str(episode) if episode else '',
-            'tvshowtitle': tvshowtitle or '',
+            'year': effective_year,
+            'season': effective_season,
+            'episode': effective_episode,
+            'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
         }
         play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
 
@@ -1360,33 +1696,33 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
 
         # Gán metadata vào ListItem
         info_tag = list_item.getVideoInfoTag()
-        info_tag.setTitle(movie_title)
+        info_tag.setTitle(effective_title)
 
-        if plot_text:
-            info_tag.setPlot(plot_text)
+        if resolved_plot:
+            info_tag.setPlot(resolved_plot)
 
-        if movie_year and str(movie_year).isdigit():
-            info_tag.setYear(int(movie_year))
+        if effective_year and str(effective_year).isdigit():
+            info_tag.setYear(int(effective_year))
 
         ids = {}
-        if imdb_id:
-            ids['imdb'] = str(imdb_id)
-            info_tag.setIMDBNumber(str(imdb_id))
-        if tmdb_id:
-            ids['tmdb'] = str(tmdb_id)
+        if resolved_imdb_id:
+            ids['imdb'] = resolved_imdb_id
+            info_tag.setIMDBNumber(resolved_imdb_id)
+        if resolved_tmdb_id:
+            ids['tmdb'] = resolved_tmdb_id
         if ids:
-            info_tag.setUniqueIDs(ids, 'imdb' if imdb_id else 'tmdb')
+            info_tag.setUniqueIDs(ids, 'imdb' if resolved_imdb_id else 'tmdb')
 
-        if season and episode:
+        if is_episode_item:
             info_tag.setMediaType('episode')
-            info_tag.setTvShowTitle(tvshowtitle or movie_title)
-            info_tag.setSeason(int(season))
-            info_tag.setEpisode(int(episode))
+            info_tag.setTvShowTitle(effective_tvshowtitle)
+            info_tag.setSeason(int(effective_season))
+            info_tag.setEpisode(int(effective_episode))
         else:
             info_tag.setMediaType('movie')
 
-        if poster_path:
-            list_item.setArt({'thumb': poster_path, 'poster': poster_path, 'fanart': poster_path, 'icon': poster_path})
+        if resolved_poster_path:
+            list_item.setArt({'thumb': resolved_poster_path, 'poster': resolved_poster_path, 'fanart': resolved_poster_path, 'icon': resolved_poster_path})
 
         video_stream = stream_tags.get('video_stream', {})
         audio_stream = stream_tags.get('audio_stream', {})
@@ -1492,15 +1828,25 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
             'action': 'create_strm',
             'title': link_info['title'],
             'url': link_info['url'],
-            'movie_title': movie_title,
-            'movie_year': str(movie_year) if movie_year else '',
-            'imdb': str(imdb_id) if imdb_id else '',
-            'tmdb': str(tmdb_id) if tmdb_id else '',
-            'movie_plot': plot_text,
-            'movie_rating': movie_info_local.get('imdb_rating', '') if movie_info_local else '',
-            'season': str(season) if season else '',
-            'episode': str(episode) if episode else '',
-            'tvshowtitle': tvshowtitle or '',
+            'movie_title': effective_title,
+            'movie_year': effective_year,
+            'imdb': resolved_imdb_id,
+            'tmdb': resolved_tmdb_id,
+            'movie_plot': resolved_plot,
+            'movie_rating': resolved_rating,
+            'season': effective_season,
+            'episode': effective_episode,
+            'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+            'video_resolution': stream_tags.get('video_resolution', ''),
+            'video_source': stream_tags.get('video_source', ''),
+            'video_codec': stream_tags.get('video_codec', ''),
+            'hdr': stream_tags.get('hdr', ''),
+            'hdr_type': stream_tags.get('hdr_type', ''),
+            'audio_codec': stream_tags.get('audio_codec', ''),
+            'audio_channels': stream_tags.get('audio_channels', ''),
+            'audio_language': stream_tags.get('audio_language', ''),
+            'audio_profile': stream_tags.get('audio_profile', ''),
+            'audio_object': stream_tags.get('audio_object', ''),
         }
         strm_url = sys.argv[0] + '?' + urllib.parse.urlencode(strm_params)
 
@@ -1510,10 +1856,25 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
             'title': link_info['title'],
             'url': link_info['url'],
             'fshare_url': link_info.get('fshare_url', ''),
-            'movie_title': movie_title,
-            'movie_year': str(movie_year) if movie_year else '',
-            'imdb': str(imdb_id) if imdb_id else '',
-            'tmdb': str(tmdb_id) if tmdb_id else '',
+            'movie_title': effective_title,
+            'movie_year': effective_year,
+            'imdb': resolved_imdb_id,
+            'tmdb': resolved_tmdb_id,
+            'movie_plot': resolved_plot,
+            'movie_rating': resolved_rating,
+            'season': effective_season,
+            'episode': effective_episode,
+            'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+            'video_resolution': stream_tags.get('video_resolution', ''),
+            'video_source': stream_tags.get('video_source', ''),
+            'video_codec': stream_tags.get('video_codec', ''),
+            'hdr': stream_tags.get('hdr', ''),
+            'hdr_type': stream_tags.get('hdr_type', ''),
+            'audio_codec': stream_tags.get('audio_codec', ''),
+            'audio_channels': stream_tags.get('audio_channels', ''),
+            'audio_language': stream_tags.get('audio_language', ''),
+            'audio_profile': stream_tags.get('audio_profile', ''),
+            'audio_object': stream_tags.get('audio_object', ''),
         }
         dl_url = sys.argv[0] + '?' + urllib.parse.urlencode(dl_params)
 
@@ -1648,6 +2009,23 @@ def router(paramstring):
             info = {
                 'title': params.get('movie_title', ''),
                 'year': params.get('movie_year', ''),
+                'imdb_id': params.get('imdb_id', params.get('imdb', '')),
+                'tmdb_id': params.get('tmdb', ''),
+                'plot': params.get('movie_plot', ''),
+                'rating': params.get('movie_rating', ''),
+                'season': params.get('season', ''),
+                'episode': params.get('episode', ''),
+                'tvshowtitle': params.get('tvshowtitle', ''),
+                'video_resolution': params.get('video_resolution', ''),
+                'video_source': params.get('video_source', ''),
+                'video_codec': params.get('video_codec', ''),
+                'hdr': params.get('hdr', ''),
+                'hdr_type': params.get('hdr_type', ''),
+                'audio_codec': params.get('audio_codec', ''),
+                'audio_channels': params.get('audio_channels', ''),
+                'audio_language': params.get('audio_language', ''),
+                'audio_profile': params.get('audio_profile', ''),
+                'audio_object': params.get('audio_object', ''),
             }
             download_fshare(
                 fshare_url=params.get('fshare_url', ''),
@@ -1669,6 +2047,16 @@ def router(paramstring):
                 'season': params.get('season', ''),
                 'episode': params.get('episode', ''),
                 'tvshowtitle': params.get('tvshowtitle', ''),
+                'video_resolution': params.get('video_resolution', ''),
+                'video_source': params.get('video_source', ''),
+                'video_codec': params.get('video_codec', ''),
+                'hdr': params.get('hdr', ''),
+                'hdr_type': params.get('hdr_type', ''),
+                'audio_codec': params.get('audio_codec', ''),
+                'audio_channels': params.get('audio_channels', ''),
+                'audio_language': params.get('audio_language', ''),
+                'audio_profile': params.get('audio_profile', ''),
+                'audio_object': params.get('audio_object', ''),
             }            
             create_strm_file(params.get('title', ''), params.get('url', ''), info)
         elif action == 'play_trakt':

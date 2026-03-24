@@ -21,4 +21,11 @@
       <icon>icon.png</icon>
     </assets>
   </extension>
+  <extension point="xbmc.addon.settings">
+    <settings format="xml">
+      <section id="general" label="General">
+        <setting id="tmdb_api_key" type="string" label="TMDb API Key" default="" />
+      </section>
+    </settings>
+  </extension>
 </addon>
