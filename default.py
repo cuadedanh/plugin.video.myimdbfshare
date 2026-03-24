@@ -105,6 +105,195 @@ def get_tmdb_api_key():
     return ''
 
 
+def get_omdb_api_key():
+    try:
+        addon_key = ADDON.getSetting('omdb_api_key')
+        if addon_key:
+            return addon_key.strip()
+    except Exception:
+        pass
+
+    try:
+        tmdb_helper = xbmcaddon.Addon('plugin.video.themoviedb.helper')
+        for setting_id in ['omdb_apikey', 'omdb_api_key']:
+            value = tmdb_helper.getSetting(setting_id)
+            if value:
+                return value.strip()
+    except Exception:
+        pass
+
+    return ''
+
+
+def get_trakt_client_id():
+    trakt_key_path = xbmcvfs.translatePath(
+        'special://home/addons/plugin.video.themoviedb.helper/resources/tmdbhelper/lib/api/api_keys/trakt.py'
+    )
+    try:
+        if os.path.exists(trakt_key_path):
+            with open(trakt_key_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            matches = re.findall(r"CLIENT_ID\s*=\s*'([^']*)'", content)
+            for value in matches:
+                if value:
+                    return value.strip()
+    except Exception:
+        pass
+    return ''
+
+
+def lookup_trakt_tmdb_id(imdb_id, trakt_type='movie'):
+    client_id = get_trakt_client_id()
+    if not client_id or not imdb_id:
+        return ''
+
+    headers = {
+        'trakt-api-version': '2',
+        'trakt-api-key': client_id,
+        'Content-Type': 'application/json',
+    }
+
+    resp = requests.get(
+        f'https://api.trakt.tv/search/imdb/{imdb_id}',
+        headers=headers,
+        params={'type': trakt_type},
+        timeout=5
+    )
+    resp.raise_for_status()
+
+    for item in resp.json() or []:
+        if item.get('type') != trakt_type:
+            continue
+        ids = item.get(trakt_type, {}).get('ids', {})
+        if str(ids.get('imdb', '') or '') != str(imdb_id):
+            continue
+        return str(ids.get('tmdb', '') or '')
+    return ''
+
+
+def lookup_omdb_movie(api_key, title, year=None):
+    if not api_key or not title:
+        return {}
+
+    params = {
+        'apikey': api_key,
+        't': title,
+        'type': 'movie',
+        'plot': 'short',
+        'r': 'json',
+    }
+    if year:
+        params['y'] = str(year)
+
+    resp = requests.get('https://www.omdbapi.com/', params=params, timeout=5)
+    resp.raise_for_status()
+    movie = resp.json()
+
+    if movie.get('Response') == 'False':
+        return {}
+
+    imdb_id = movie.get('imdbID', '') or ''
+    poster = movie.get('Poster', '') or ''
+
+    return {
+        'mediatype': 'movie',
+        'title': movie.get('Title', title),
+        'year': str(movie.get('Year', '') or '')[:4],
+        'tmdb_id': '',
+        'imdb_id': imdb_id,
+        'plot': movie.get('Plot', '') if movie.get('Plot') != 'N/A' else '',
+        'rating': movie.get('imdbRating', '') if movie.get('imdbRating') != 'N/A' else '',
+        'poster': poster if poster != 'N/A' else '',
+        'fanart': '',
+    }
+
+
+def lookup_omdb_episode(api_key, tvshowtitle, season, episode):
+    if not api_key or not tvshowtitle or not season or not episode:
+        return {}
+
+    show_resp = requests.get(
+        'https://www.omdbapi.com/',
+        params={
+            'apikey': api_key,
+            't': tvshowtitle,
+            'type': 'series',
+            'plot': 'short',
+            'r': 'json',
+        },
+        timeout=5
+    )
+    show_resp.raise_for_status()
+    show = show_resp.json()
+
+    if show.get('Response') == 'False':
+        return {}
+
+    ep_resp = requests.get(
+        'https://www.omdbapi.com/',
+        params={
+            'apikey': api_key,
+            't': show.get('Title', tvshowtitle),
+            'Season': str(int(season)),
+            'Episode': str(int(episode)),
+            'plot': 'short',
+            'r': 'json',
+        },
+        timeout=5
+    )
+    ep_resp.raise_for_status()
+    ep = ep_resp.json()
+
+    if ep.get('Response') == 'False':
+        return {}
+
+    show_year = str(show.get('Year', '') or '')
+    year_match = re.search(r'(19|20)\d{2}', show_year)
+    poster = ep.get('Poster', '') or ''
+    if not poster or poster == 'N/A':
+        poster = show.get('Poster', '') or ''
+
+    return {
+        'mediatype': 'episode',
+        'title': ep.get('Title', f"{tvshowtitle} S{int(season):02d}E{int(episode):02d}"),
+        'tvshowtitle': show.get('Title', tvshowtitle),
+        'year': year_match.group(0) if year_match else '',
+        'season': str(season),
+        'episode': str(episode),
+        'tmdb_id': '',
+        'imdb_id': show.get('imdbID', '') or '',
+        'plot': ep.get('Plot', '') if ep.get('Plot') != 'N/A' else (show.get('Plot', '') if show.get('Plot') != 'N/A' else ''),
+        'rating': ep.get('imdbRating', '') if ep.get('imdbRating') != 'N/A' else '',
+        'poster': poster if poster != 'N/A' else '',
+        'fanart': '',
+        'thumb': '',
+    }
+
+
+def lookup_fallback_metadata(title=None, year=None, tvshowtitle=None, season=None, episode=None):
+    omdb_api_key = get_omdb_api_key()
+    if not omdb_api_key:
+        return {}
+
+    is_episode = bool(season and episode and tvshowtitle)
+    data = {}
+
+    if is_episode:
+        data = lookup_omdb_episode(omdb_api_key, tvshowtitle, season, episode)
+        trakt_type = 'show'
+    else:
+        data = lookup_omdb_movie(omdb_api_key, title, year)
+        trakt_type = 'movie'
+
+    if data and not data.get('tmdb_id') and data.get('imdb_id'):
+        try:
+            data['tmdb_id'] = lookup_trakt_tmdb_id(data.get('imdb_id'), trakt_type=trakt_type) or ''
+        except Exception as e:
+            xbmc.log(f"Trakt lookup error: {e}", level=xbmc.LOGWARNING)
+
+    return data or {}
+
+
 def lookup_tmdb_movie(api_key, title, year=None):
     if not api_key or not title:
         return {}
@@ -206,10 +395,6 @@ def lookup_tmdb_episode(api_key, tvshowtitle, season, episode):
 
 
 def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, episode=None):
-    api_key = get_tmdb_api_key()
-    if not api_key:
-        return {}
-
     is_episode = bool(season and episode and tvshowtitle)
     lookup_title = tvshowtitle if is_episode else title
     cache_key = f"{'tv' if is_episode else 'movie'}|{(lookup_title or '').lower()}|{year or ''}|{season or ''}|{episode or ''}"
@@ -218,18 +403,35 @@ def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, e
     if cache_key in cache:
         return cache[cache_key]
 
-    try:
-        if is_episode:
-            data = lookup_tmdb_episode(api_key, tvshowtitle, season, episode)
-        else:
-            data = lookup_tmdb_movie(api_key, title, year)
-        if data:
-            cache[cache_key] = data
-            save_tmdb_lookup_cache(cache)
-        return data or {}
-    except Exception as e:
-        xbmc.log(f"TMDb lookup error: {e}", level=xbmc.LOGWARNING)
-        return {}
+    data = {}
+    api_key = get_tmdb_api_key()
+
+    if api_key:
+        try:
+            if is_episode:
+                data = lookup_tmdb_episode(api_key, tvshowtitle, season, episode)
+            else:
+                data = lookup_tmdb_movie(api_key, title, year)
+        except Exception as e:
+            xbmc.log(f"TMDb lookup error: {e}", level=xbmc.LOGWARNING)
+
+    if not data:
+        try:
+            data = lookup_fallback_metadata(
+                title=title,
+                year=year,
+                tvshowtitle=tvshowtitle,
+                season=season,
+                episode=episode,
+            )
+        except Exception as e:
+            xbmc.log(f"Fallback metadata lookup error: {e}", level=xbmc.LOGWARNING)
+            data = {}
+
+    if data:
+        cache[cache_key] = data
+        save_tmdb_lookup_cache(cache)
+    return data or {}
 
 def parse_stream_tags_from_filename(filename):
     """
@@ -1646,7 +1848,8 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
         resolved_poster_path = poster_path
 
         lookup_key = f"{effective_title}|{effective_year}|{effective_tvshowtitle}|{effective_season}|{effective_episode}"
-        if not resolved_imdb_id and not resolved_tmdb_id:
+        needs_lookup = not all([resolved_imdb_id, resolved_tmdb_id, resolved_plot, resolved_rating, resolved_poster_path])
+        if needs_lookup:
             if lookup_key not in lookup_cache:
                 lookup_cache[lookup_key] = lookup_tmdb_metadata(
                     title=effective_title if not is_episode_item else '',
@@ -1671,7 +1874,10 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
 
                 poster_rel = tmdb_meta.get('poster', '')
                 if poster_rel:
-                    resolved_poster_path = f"https://image.tmdb.org/t/p/w500{poster_rel}"
+                    if str(poster_rel).startswith(('http://', 'https://')):
+                        resolved_poster_path = poster_rel
+                    else:
+                        resolved_poster_path = f"https://image.tmdb.org/t/p/w500{poster_rel}"
         tag_parts = [tag for tag in [stream_tags.get('video_tag', ''), stream_tags.get('audio_tag', '')] if tag]
         tag_label = f" [{ ' | '.join(tag_parts) }]" if tag_parts else ''
 
