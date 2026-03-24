@@ -1,0 +1,8 @@
+{
+  "tmdb_api_key": "",
+  "show_lookup_debug_ids": true,
+  "gsheet_id": "1xFtj9TZEyF_wI-TDNIXZ1caOLsYeAlpSBQ2TVGaigjs",
+  "strm_dir": "",
+  "community_items_per_page": 30,
+  "community_cache_ttl": 300
+}

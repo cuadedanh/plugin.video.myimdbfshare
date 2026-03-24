@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<settings>
-  <category label="General">
-    <setting id="tmdb_api_key" type="text" label="TMDb API Key" default="" />
-  </category>
-</settings>
