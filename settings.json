@@ -4,5 +4,9 @@
   "gsheet_id": "1xFtj9TZEyF_wI-TDNIXZ1caOLsYeAlpSBQ2TVGaigjs",
   "strm_dir": "",
   "community_items_per_page": 30,
-  "community_cache_ttl": 300
+  "community_cache_ttl": 300,
+  "metadata_source": "omdb",
+  "metadata_fetch_plot": false,
+  "metadata_fetch_rating": false,
+  "metadata_fetch_poster": false
 }

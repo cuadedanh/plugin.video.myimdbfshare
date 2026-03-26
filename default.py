@@ -149,6 +149,62 @@ def get_show_lookup_debug_ids():
     return str(value).lower() == 'true'
 
 
+def get_metadata_source():
+    """Tra ve nguon metadata: 'none', 'tmdb', 'omdb'. Mac dinh 'tmdb'."""
+    value = get_local_setting('metadata_source', 'tmdb')
+    if value in ('none', 'tmdb', 'omdb'):
+        return value
+    return 'tmdb'
+
+
+def get_metadata_fetch_plot():
+    value = get_local_setting('metadata_fetch_plot', True)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() != 'false'
+
+
+def get_metadata_fetch_rating():
+    value = get_local_setting('metadata_fetch_rating', True)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() != 'false'
+
+
+def get_metadata_fetch_poster():
+    value = get_local_setting('metadata_fetch_poster', True)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() != 'false'
+
+
+def get_fetch_ids_on_play():
+    value = get_local_setting('fetch_ids_on_play', True)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() != 'false'
+
+
+def cycle_metadata_source():
+    current = get_metadata_source()
+    order = ['none', 'tmdb', 'omdb']
+    next_val = order[(order.index(current) + 1) % len(order)]
+    set_local_setting('metadata_source', next_val)
+    labels = {'none': 'Không tra', 'tmdb': 'TMDb', 'omdb': 'OMDb'}
+    xbmcgui.Dialog().notification('Nguồn metadata', f'Đã chuyển sang: {labels[next_val]}', time=2500)
+
+
+def toggle_bool_setting(key, label):
+    current = get_local_setting(key, True)
+    if isinstance(current, bool):
+        new_val = not current
+    else:
+        new_val = str(current).lower() == 'false'
+    set_local_setting(key, new_val)
+    state = 'Bật' if new_val else 'Tắt'
+    xbmcgui.Dialog().notification(label, state, time=2500)
+
+
 def clear_gsheet_cache():
     try:
         if os.path.exists(GSHEET_CACHE_FILE):
@@ -203,6 +259,43 @@ def settings_menu():
 
     strm_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'choose_strm_dir'})
     xbmcplugin.addDirectoryItem(handle=addon_handle, url=strm_url, listitem=xbmcgui.ListItem('[Thư mục lưu .strm và download]'), isFolder=False)
+
+    # --- Nhóm: Nguồn metadata ---
+    source_labels = {'none': 'Không tra', 'tmdb': 'TMDb', 'omdb': 'OMDb'}
+    current_source = get_metadata_source()
+    source_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'cycle_metadata_source'})
+    source_item = xbmcgui.ListItem(f'[Nguồn metadata: {source_labels[current_source]}]')
+    source_item.getVideoInfoTag().setPlot(
+        'Chọn nguồn tra metadata khi duyệt danh sách. '
+        'Không tra: tắt hoàn toàn (nhanh nhất). '
+        'TMDb: cần TMDb API Key. '
+        'OMDb: cần OMDb API Key. '
+        'Bấm để chuyển vòng giữa các tùy chọn.'
+    )
+    xbmcplugin.addDirectoryItem(handle=addon_handle, url=source_url, listitem=source_item, isFolder=False)
+
+    # Các trường tra khi browse (chỉ hiển thị khi nguồn != none)
+    if current_source != 'none':
+        def _toggle_item(action, key, label, getter):
+            state = 'Bật' if getter() else 'Tắt'
+            url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': action})
+            li = xbmcgui.ListItem(f'[Tra {label} khi browse: {state}]')
+            xbmcplugin.addDirectoryItem(handle=addon_handle, url=url, listitem=li, isFolder=False)
+
+        _toggle_item('toggle_fetch_plot',   'metadata_fetch_plot',   'Plot',   get_metadata_fetch_plot)
+        _toggle_item('toggle_fetch_rating', 'metadata_fetch_rating', 'Rating', get_metadata_fetch_rating)
+        _toggle_item('toggle_fetch_poster', 'metadata_fetch_poster', 'Poster', get_metadata_fetch_poster)
+
+    # --- Tra ID khi play ---
+    ids_on_play_state = 'Bật' if get_fetch_ids_on_play() else 'Tắt'
+    ids_play_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_fetch_ids_on_play'})
+    ids_play_item = xbmcgui.ListItem(f'[Tra IMDb/TMDb ID khi play: {ids_on_play_state}]')
+    ids_play_item.getVideoInfoTag().setPlot(
+        'Khi bật: nếu item chưa có IMDb/TMDb ID lúc play, addon sẽ tự tra API để lấy ID '
+        'trước khi phát — giúp Trakt scrobble và TMDb Helper hiện metadata đúng. '
+        'Khi tắt: chỉ dùng ID đã có sẵn từ lúc browse.'
+    )
+    xbmcplugin.addDirectoryItem(handle=addon_handle, url=ids_play_url, listitem=ids_play_item, isFolder=False)
 
     debug_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_debug_ids'})
     debug_item = xbmcgui.ListItem('[Hiện debug IMDb/TMDb IDs]')
@@ -555,28 +648,43 @@ def lookup_tmdb_episode(api_key, tvshowtitle, season, episode):
     }
 
 
-def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, episode=None):
+def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, episode=None,
+                         force_source=None, ids_only=False):
+    """Tra cuu metadata tu TMDb hoac OMDb tuy theo setting.
+
+    force_source: 'tmdb' | 'omdb' | None (dung setting)
+    ids_only: chi tra imdb_id va tmdb_id, bo qua plot/rating/poster
+    """
+    source = force_source or get_metadata_source()
+    if source == 'none':
+        return {}
+
     is_episode = bool(season and episode and tvshowtitle)
     lookup_title = tvshowtitle if is_episode else title
     cache_key = f"{'tv' if is_episode else 'movie'}|{(lookup_title or '').lower()}|{year or ''}|{season or ''}|{episode or ''}"
 
     cache = load_tmdb_lookup_cache()
     if cache_key in cache:
-        return cache[cache_key]
+        cached = cache[cache_key]
+        if ids_only:
+            return {k: cached.get(k, '') for k in ('imdb_id', 'tmdb_id', 'title', 'tvshowtitle', 'year', 'season', 'episode', 'mediatype')}
+        return cached
 
     data = {}
-    api_key = get_tmdb_api_key()
 
-    if api_key:
-        try:
-            if is_episode:
-                data = lookup_tmdb_episode(api_key, tvshowtitle, season, episode)
-            else:
-                data = lookup_tmdb_movie(api_key, title, year)
-        except Exception as e:
-            xbmc.log(f"TMDb lookup error: {e}", level=xbmc.LOGWARNING)
+    if source == 'tmdb':
+        api_key = get_tmdb_api_key()
+        if api_key:
+            try:
+                if is_episode:
+                    data = lookup_tmdb_episode(api_key, tvshowtitle, season, episode)
+                else:
+                    data = lookup_tmdb_movie(api_key, title, year)
+            except Exception as e:
+                xbmc.log(f"TMDb lookup error: {e}", level=xbmc.LOGWARNING)
 
     if not data:
+        # Fallback: dung OMDb (hoac khi source == 'omdb')
         try:
             data = lookup_fallback_metadata(
                 title=title,
@@ -592,7 +700,33 @@ def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, e
     if data:
         cache[cache_key] = data
         save_tmdb_lookup_cache(cache)
+
+    if data and ids_only:
+        return {k: data.get(k, '') for k in ('imdb_id', 'tmdb_id', 'title', 'tvshowtitle', 'year', 'season', 'episode', 'mediatype')}
     return data or {}
+
+
+def _apply_metadata_fields(resolved, raw_meta):
+    """Ap dung cac truong tu raw_meta vao resolved dict tuy theo setting fetch_*.
+    Luon ap dung imdb_id va tmdb_id (duoc kiem soat rieng boi fetch_ids_on_play).
+    """
+    resolved['imdb_id'] = raw_meta.get('imdb_id', '') or resolved.get('imdb_id', '')
+    resolved['tmdb_id'] = raw_meta.get('tmdb_id', '') or resolved.get('tmdb_id', '')
+
+    if get_metadata_fetch_plot():
+        resolved['plot'] = resolved.get('plot') or raw_meta.get('plot', '')
+    if get_metadata_fetch_rating():
+        resolved['rating'] = resolved.get('rating') or raw_meta.get('rating', '')
+    if get_metadata_fetch_poster():
+        resolved['poster'] = resolved.get('poster') or raw_meta.get('poster', '')
+        resolved['fanart'] = resolved.get('fanart') or raw_meta.get('fanart', '')
+
+    # Cap nhat title/year/tvshowtitle tu API
+    resolved['title'] = raw_meta.get('title', '') or resolved.get('title', '')
+    resolved['year'] = raw_meta.get('year', '') or resolved.get('year', '')
+    resolved['tvshowtitle'] = raw_meta.get('tvshowtitle', '') or resolved.get('tvshowtitle', '')
+    return resolved
+
 
 def parse_stream_tags_from_filename(filename):
     """
@@ -1635,6 +1769,57 @@ def timfshare(query):
         notify("KhÃ´ng tÃ¬m tháº¥y káº¿t quáº£ phÃ¹ há»£p.")
     return data
 
+def show_fshare_files_from_api_response(api_response_str):
+    xbmcplugin.setPluginCategory(addon_handle, 'Fshare Files from API')
+    xbmcplugin.setContent(addon_handle, 'files')
+
+    try:
+        api_data = json.loads(api_response_str)
+    except json.JSONDecodeError as e:
+        xbmc.log(f"Fshare: Error decoding API response: {e}", level=xbmc.LOGERROR)
+        xbmcgui.Dialog().ok("Lá»—i", f"Không thể giải mã dữ liệu API: {e}")
+        xbmcplugin.endOfDirectory(addon_handle, succeeded=False)
+        return
+
+    list_items = []
+    for item in api_data:
+        try:
+            name = (item.get('name') or '').strip()
+            furl = (item.get('furl') or '').strip()
+            item_size = int(item.get('size') or 0)
+
+            if not name or not furl:
+                xbmc.log(f"Fshare: Skipping item due to missing name or furl: {item}", level=xbmc.LOGWARNING)
+                continue
+
+            size_str = ''
+            if item_size > 0:
+                size_str = f" ({item_size/(1024**3):.2f} GB)" if item_size >= 1024**3 else f" ({item_size/(1024**2):.2f} MB)"
+
+            list_item = xbmcgui.ListItem(label=f"{name}{size_str}")
+            
+            # Set information for the list item
+            info_tag = list_item.getVideoInfoTag()
+            info_tag.setTitle(name)
+            info_tag.setPlot(f"Fshare URL: {furl}")
+            
+            list_item.setProperty('IsPlayable', 'true')
+            play_url = sys.argv[0] + '?' + urllib.parse.urlencode({
+                'action': 'play_fshare_file',
+                'url': furl,
+                'title': name,
+            })
+            list_items.append((play_url, list_item, False))
+        except Exception as e:
+            xbmc.log(f"Fshare: Error processing API item {item.get('name', 'N/A')}: {e}", level=xbmc.LOGERROR)
+            continue
+
+    if list_items:
+        xbmcplugin.addDirectoryItems(addon_handle, list_items)
+    else:
+        xbmcgui.Dialog().ok('Thông báo', 'Không có file Fshare nào để hiển thị từ dữ liệu API.')
+    
+    xbmcplugin.endOfDirectory(addon_handle)
 def get_vietmediaf_fshare_credentials():
     try:
         vietmediaf = xbmcaddon.Addon('plugin.video.vietmediaF')
@@ -1647,11 +1832,102 @@ def get_vietmediaf_fshare_credentials():
     return '', ''
 
 
-def fetch_fshare_folder_items(folder_url, page_index=0, limit=100):
+FSHARE_FILE_REALNAME_CACHE = {}
+
+def get_fshare_file_realname(file_url):
+    """Goi api/fileops/get de lay ten file that tu Fshare.
+    Tra ve ten file that (str) hoac '' neu that bai.
+    Cache ket qua trong bo nho theo session de tranh goi API lap lai.
+    """
+    linkcode_match = re.search(r'/file/([a-zA-Z0-9]+)', file_url)
+    if not linkcode_match:
+        return ''
+    linkcode = linkcode_match.group(1)
+
+    if linkcode in FSHARE_FILE_REALNAME_CACHE:
+        return FSHARE_FILE_REALNAME_CACHE[linkcode]
+
     token, session_id = get_vietmediaf_fshare_credentials()
     if not token or not session_id:
-        raise RuntimeError('Chưa có token Fshare trong VietmediaF. Hãy đăng nhập Fshare ở addon VietmediaF trước.')
+        return ''
 
+    try:
+        payload = json.dumps({'token': token, 'url': file_url})
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'kodivietmediaf-K58W6U',
+            'Cookie': f'session_id={session_id}'
+        }
+        resp = requests.post(
+            'https://api.fshare.vn/api/fileops/get',
+            data=payload,
+            headers=headers,
+            timeout=10
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Neu session het han, tra ve rong (khong tu dong re-login o day)
+        if isinstance(data, dict) and data.get('code') == 201:
+            xbmc.log(f"Fshare get_file_realname: session expired for {linkcode}", level=xbmc.LOGWARNING)
+            FSHARE_FILE_REALNAME_CACHE[linkcode] = ''
+            return ''
+        real_name = (data.get('name') or '').strip() if isinstance(data, dict) else ''
+        FSHARE_FILE_REALNAME_CACHE[linkcode] = real_name
+        xbmc.log(f"Fshare get_file_realname: {linkcode} -> '{real_name}'", level=xbmc.LOGINFO)
+        return real_name
+    except Exception as e:
+        xbmc.log(f"Fshare get_file_realname error for {linkcode}: {e}", level=xbmc.LOGWARNING)
+        FSHARE_FILE_REALNAME_CACHE[linkcode] = ''
+        return ''
+
+
+def trigger_vietmediaf_login_and_wait():
+    """Goi action account_fshare cua VietmediaF de dang nhap lai Fshare,
+    sau do cho toi da 60 giay cho den khi token moi duoc luu vao settings."""
+    xbmc.log("Fshare: Triggering VietmediaF account_fshare login...", level=xbmc.LOGINFO)
+    old_token, _ = get_vietmediaf_fshare_credentials()
+    xbmc.executebuiltin('RunPlugin(plugin://plugin.video.vietmediaF?action=account_fshare)')
+    for _ in range(60):
+        xbmc.sleep(1000)
+        new_token, new_session = get_vietmediaf_fshare_credentials()
+        if new_token and new_session and new_token != old_token:
+            xbmc.log("Fshare: New token detected after login.", level=xbmc.LOGINFO)
+            return new_token, new_session
+    return get_vietmediaf_fshare_credentials()
+
+
+def _parse_fshare_folder_response(data):
+    """Chuan hoa du lieu tra ve tu API: chap nhan list, dict.items hoac dict.data.items."""
+    items = []
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        if 'items' in data:
+            items = data['items']
+        elif 'data' in data:
+            if isinstance(data['data'], list):
+                items = data['data']
+            elif isinstance(data['data'], dict):
+                items = data['data'].get('items', [])
+    else:
+        xbmc.log(f"Fshare: Unexpected API response type: {type(data)}", level=xbmc.LOGERROR)
+
+    for item in (items or []):
+        if not item.get('linkcode'):
+            url_val = item.get('furl') or item.get('url')
+            if url_val:
+                match = re.search(r'/(file|folder)/([a-zA-Z0-9]+)', url_val)
+                if match:
+                    item['linkcode'] = match.group(2)
+                    if item.get('type') is None:
+                        item['type'] = '0' if match.group(1) == 'folder' else '1'
+
+    xbmc.log(f"Fshare: Total items parsed: {len(items)}", level=xbmc.LOGINFO)
+    return {'items': items or []}
+
+
+def _do_fshare_folder_request(token, session_id, folder_url, page_index, limit):
+    """Thuc hien mot lan goi API getFolderList va tra ve response."""
     payload = {
         'token': token,
         'url': folder_url,
@@ -1664,17 +1940,65 @@ def fetch_fshare_folder_items(folder_url, page_index=0, limit=100):
         'User-Agent': 'kodivietmediaf-K58W6U',
         'Cookie': f'session_id={session_id}'
     }
+    xbmc.log(f"Fshare: Request payload: {json.dumps(payload)}", level=xbmc.LOGINFO)
     response = requests.post(
         'https://api.fshare.vn/api/fileops/getFolderList',
         json=payload,
         headers=headers,
         timeout=15
     )
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict):
-        return {'items': []}
-    return data
+    xbmc.log(f"Fshare: API response status code: {response.status_code}", level=xbmc.LOGINFO)
+    xbmc.log(f"Fshare: API response text: {response.text}", level=xbmc.LOGINFO)
+    return response
+
+
+def fetch_fshare_folder_items(folder_url, page_index=0, limit=100):
+    xbmc.log(f"Fshare: fetch_fshare_folder_items called for URL: {folder_url}", level=xbmc.LOGINFO)
+    token, session_id = get_vietmediaf_fshare_credentials()
+    xbmc.log(f"Fshare: Retrieved token (present: {bool(token)}) and session_id (present: {bool(session_id)})", level=xbmc.LOGINFO)
+
+    if not token or not session_id:
+        # Chua co token lan dau -> trigger login ngay
+        xbmc.log("Fshare: No credentials found, triggering login...", level=xbmc.LOGWARNING)
+        token, session_id = trigger_vietmediaf_login_and_wait()
+        if not token or not session_id:
+            raise RuntimeError('Khong lay duoc token Fshare tu VietmediaF sau khi dang nhap. Vui long thu lai.')
+
+    try:
+        response = _do_fshare_folder_request(token, session_id, folder_url, page_index, limit)
+        response.raise_for_status()
+        data = response.json()
+
+        # Kiem tra loi "Not logged in" tu API (code 201)
+        if isinstance(data, dict) and data.get('code') == 201:
+            xbmc.log("Fshare: Session expired (code 201), triggering re-login via VietmediaF...", level=xbmc.LOGWARNING)
+            confirm = xbmcgui.Dialog().yesno(
+                'Fshare: Phien dang nhap het han',
+                'Token Fshare da het han.\nBam [B]Dang nhap lai[/B] de VietmediaF tu dong lam moi tai khoan.',
+                nolabel='Huy',
+                yeslabel='Dang nhap lai'
+            )
+            if not confirm:
+                raise RuntimeError('Phien dang nhap Fshare da het han. Vui long dang nhap lai trong VietmediaF.')
+
+            token, session_id = trigger_vietmediaf_login_and_wait()
+            if not token or not session_id:
+                raise RuntimeError('Khong lay duoc token moi sau khi dang nhap lai. Vui long thu lai.')
+
+            # Thu lai lan 2 sau khi login
+            xbmc.log("Fshare: Retrying folder request with new credentials...", level=xbmc.LOGINFO)
+            response = _do_fshare_folder_request(token, session_id, folder_url, page_index, limit)
+            response.raise_for_status()
+            data = response.json()
+
+            if isinstance(data, dict) and data.get('code') == 201:
+                raise RuntimeError('Dang nhap lai khong thanh cong. Vui long kiem tra tai khoan Fshare trong VietmediaF.')
+
+        return _parse_fshare_folder_response(data)
+
+    except requests.exceptions.RequestException as e:
+        xbmc.log(f"Fshare: RequestException during API call: {e}", level=xbmc.LOGERROR)
+        raise  # Re-raise to be caught by browse_fshare_folder
 
 
 def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
@@ -1746,7 +2070,7 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
             resolved_imdb_id = ''
             resolved_tmdb_id = ''
 
-            if is_video_file:
+            if is_video_file and get_metadata_source() != 'none':
                 lookup_key = f"{effective_title}|{effective_year}|{effective_tvshowtitle}|{effective_season}|{effective_episode}"
                 if lookup_key not in lookup_cache:
                     lookup_cache[lookup_key] = lookup_tmdb_metadata(
@@ -1760,28 +2084,23 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 if resolved_meta:
                     resolved_imdb_id = resolved_meta.get('imdb_id', '') or ''
                     resolved_tmdb_id = resolved_meta.get('tmdb_id', '') or ''
-                    resolved_plot = resolved_meta.get('plot', '') or ''
-                    resolved_rating = resolved_meta.get('rating', '') or ''
+                    if get_metadata_fetch_plot():
+                        resolved_plot = resolved_meta.get('plot', '') or ''
+                    if get_metadata_fetch_rating():
+                        resolved_rating = resolved_meta.get('rating', '') or ''
                     if is_episode_item:
                         effective_title = resolved_meta.get('title', '') or effective_title
                         effective_tvshowtitle = resolved_meta.get('tvshowtitle', '') or effective_tvshowtitle
                     else:
                         effective_title = resolved_meta.get('title', '') or effective_title
                         effective_year = resolved_meta.get('year', '') or effective_year
-
-                    poster_rel = resolved_meta.get('poster', '')
-                    if poster_rel:
-                        if str(poster_rel).startswith(('http://', 'https://')):
-                            resolved_poster_path = poster_rel
-                        else:
-                            resolved_poster_path = f"https://image.tmdb.org/t/p/w500{poster_rel}"
-
-                    fanart_rel = resolved_meta.get('fanart', '')
-                    if fanart_rel:
-                        if str(fanart_rel).startswith(('http://', 'https://')):
-                            resolved_fanart = fanart_rel
-                        else:
-                            resolved_fanart = f"https://image.tmdb.org/t/p/original{fanart_rel}"
+                    if get_metadata_fetch_poster():
+                        poster_rel = resolved_meta.get('poster', '')
+                        if poster_rel:
+                            resolved_poster_path = poster_rel if str(poster_rel).startswith(('http://', 'https://')) else f"https://image.tmdb.org/t/p/w500{poster_rel}"
+                        fanart_rel = resolved_meta.get('fanart', '')
+                        if fanart_rel:
+                            resolved_fanart = fanart_rel if str(fanart_rel).startswith(('http://', 'https://')) else f"https://image.tmdb.org/t/p/original{fanart_rel}"
 
             tag_parts = [tag for tag in [stream_tags.get('video_tag', ''), stream_tags.get('audio_tag', '')] if tag] if is_video_file else []
             tag_label = f" [{' | '.join(tag_parts)}]" if tag_parts else ''
@@ -2118,13 +2437,24 @@ def list_community(page=1):
             is_playable = not is_folder
             is_video_file = is_playable and is_video_item(name, link)
 
+            # Neu ten trong Sheet khong nhan dang duoc la video nhung link la fshare file,
+            # thi goi API lay ten file that de thu nhan dang lai
+            real_name = ''
+            if is_playable and not is_video_file and 'fshare.vn/file/' in link:
+                real_name = get_fshare_file_realname(link)
+                if real_name and is_video_item(real_name):
+                    is_video_file = True
+                    xbmc.log(f"list_community: resolved real name '{real_name}' for sheet item '{name}'", level=xbmc.LOGINFO)
+
             try:
                 rating = float(rating_raw) if rating_raw and rating_raw.replace('.', '', 1).isdigit() else 0.0
             except:
                 rating = 0.0
 
-            stream_tags = parse_stream_tags_from_filename(name) if is_video_file else {}
-            identity_tags = parse_media_identity_from_filename(name, name) if is_video_file else {}
+            # Dung ten file that (neu co) de parse stream/identity tags thay vi ten Sheet
+            parse_name = real_name if real_name and is_video_file else name
+            stream_tags = parse_stream_tags_from_filename(parse_name) if is_video_file else {}
+            identity_tags = parse_media_identity_from_filename(parse_name, parse_name) if is_video_file else {}
             effective_season = str(identity_tags.get('season') or '')
             effective_episode = str(identity_tags.get('episode') or '')
             is_episode_item = bool(effective_season and effective_episode)
@@ -2141,8 +2471,8 @@ def list_community(page=1):
             resolved_imdb_id = ''
             resolved_tmdb_id = ''
 
-            needs_lookup = is_video_file and not all([resolved_plot, resolved_rating, resolved_poster_path, resolved_imdb_id, resolved_tmdb_id])
             lookup_key = f"{effective_title}|{effective_year}|{effective_tvshowtitle}|{effective_season}|{effective_episode}"
+            needs_lookup = is_video_file and get_metadata_source() != 'none'
             if needs_lookup:
                 if lookup_key not in lookup_cache:
                     lookup_cache[lookup_key] = lookup_tmdb_metadata(
@@ -2156,29 +2486,23 @@ def list_community(page=1):
                 if resolved_meta:
                     resolved_imdb_id = resolved_meta.get('imdb_id', '') or resolved_imdb_id
                     resolved_tmdb_id = resolved_meta.get('tmdb_id', '') or resolved_tmdb_id
-                    resolved_plot = resolved_plot or resolved_meta.get('plot', '')
-                    resolved_rating = resolved_rating or resolved_meta.get('rating', '')
-
+                    if get_metadata_fetch_plot():
+                        resolved_plot = resolved_plot or resolved_meta.get('plot', '')
+                    if get_metadata_fetch_rating():
+                        resolved_rating = resolved_rating or resolved_meta.get('rating', '')
                     if is_episode_item:
                         effective_title = resolved_meta.get('title', '') or effective_title
                         effective_tvshowtitle = resolved_meta.get('tvshowtitle', '') or effective_tvshowtitle
                     else:
                         effective_title = resolved_meta.get('title', '') or effective_title
                         effective_year = resolved_meta.get('year', '') or effective_year
-
-                    poster_rel = resolved_meta.get('poster', '')
-                    if poster_rel and not resolved_poster_path:
-                        if str(poster_rel).startswith(('http://', 'https://')):
-                            resolved_poster_path = poster_rel
-                        else:
-                            resolved_poster_path = f"https://image.tmdb.org/t/p/w500{poster_rel}"
-
-                    fanart_rel = resolved_meta.get('fanart', '')
-                    if fanart_rel and not resolved_fanart:
-                        if str(fanart_rel).startswith(('http://', 'https://')):
-                            resolved_fanart = fanart_rel
-                        else:
-                            resolved_fanart = f"https://image.tmdb.org/t/p/original{fanart_rel}"
+                    if get_metadata_fetch_poster():
+                        poster_rel = resolved_meta.get('poster', '')
+                        if poster_rel and not resolved_poster_path:
+                            resolved_poster_path = poster_rel if str(poster_rel).startswith(('http://', 'https://')) else f"https://image.tmdb.org/t/p/w500{poster_rel}"
+                        fanart_rel = resolved_meta.get('fanart', '')
+                        if fanart_rel and not resolved_fanart:
+                            resolved_fanart = fanart_rel if str(fanart_rel).startswith(('http://', 'https://')) else f"https://image.tmdb.org/t/p/original{fanart_rel}"
 
             if rating <= 0 and resolved_rating:
                 try:
@@ -2408,8 +2732,7 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
         resolved_poster_path = ''
 
         lookup_key = f"{effective_title}|{effective_year}|{effective_tvshowtitle}|{effective_season}|{effective_episode}"
-        needs_lookup = not all([resolved_imdb_id, resolved_tmdb_id, resolved_plot, resolved_rating, resolved_poster_path])
-        if needs_lookup:
+        if get_metadata_source() != 'none':
             if lookup_key not in lookup_cache:
                 lookup_cache[lookup_key] = lookup_tmdb_metadata(
                     title=effective_title if not is_episode_item else '',
@@ -2422,22 +2745,20 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
             if tmdb_meta:
                 resolved_imdb_id = tmdb_meta.get('imdb_id', '') or resolved_imdb_id
                 resolved_tmdb_id = tmdb_meta.get('tmdb_id', '') or resolved_tmdb_id
-                resolved_plot = tmdb_meta.get('plot', '') or resolved_plot
-                resolved_rating = tmdb_meta.get('rating', '') or resolved_rating
-
+                if get_metadata_fetch_plot():
+                    resolved_plot = tmdb_meta.get('plot', '') or resolved_plot
+                if get_metadata_fetch_rating():
+                    resolved_rating = tmdb_meta.get('rating', '') or resolved_rating
                 if is_episode_item:
                     effective_title = tmdb_meta.get('title', '') or effective_title
                     effective_tvshowtitle = tmdb_meta.get('tvshowtitle', '') or effective_tvshowtitle
                 else:
                     effective_title = tmdb_meta.get('title', '') or effective_title
                     effective_year = tmdb_meta.get('year', '') or effective_year
-
-                poster_rel = tmdb_meta.get('poster', '')
-                if poster_rel:
-                    if str(poster_rel).startswith(('http://', 'https://')):
-                        resolved_poster_path = poster_rel
-                    else:
-                        resolved_poster_path = f"https://image.tmdb.org/t/p/w500{poster_rel}"
+                if get_metadata_fetch_poster():
+                    poster_rel = tmdb_meta.get('poster', '')
+                    if poster_rel:
+                        resolved_poster_path = poster_rel if str(poster_rel).startswith(('http://', 'https://')) else f"https://image.tmdb.org/t/p/w500{poster_rel}"
         tag_parts = [tag for tag in [stream_tags.get('video_tag', ''), stream_tags.get('audio_tag', '')] if tag]
         tag_label = f" [{ ' | '.join(tag_parts) }]" if tag_parts else ''
         debug_label = ''
@@ -2671,7 +2992,26 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
 def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year, season=None, episode=None, tvshowtitle=None):
     import json as _json
 
-    # Set script.trakt.ids vÃ o Window(10000)
+    # Neu chua co ID va setting fetch_ids_on_play bat -> tra API ngay truoc khi play
+    if get_fetch_ids_on_play() and not imdb_id and not tmdb_id and movie_title:
+        xbmc.log(f"play_trakt: no IDs for '{movie_title}', fetching now...", level=xbmc.LOGINFO)
+        try:
+            meta = lookup_tmdb_metadata(
+                title=movie_title if not (season and episode) else '',
+                year=movie_year,
+                tvshowtitle=tvshowtitle if (season and episode) else '',
+                season=season,
+                episode=episode,
+                ids_only=True,
+            )
+            if meta:
+                imdb_id = imdb_id or meta.get('imdb_id', '')
+                tmdb_id = tmdb_id or meta.get('tmdb_id', '')
+                xbmc.log(f"play_trakt: fetched imdb={imdb_id} tmdb={tmdb_id}", level=xbmc.LOGINFO)
+        except Exception as e:
+            xbmc.log(f"play_trakt: ID fetch error: {e}", level=xbmc.LOGWARNING)
+
+    # Set script.trakt.ids vao Window(10000)
     if imdb_id or tmdb_id:
         trakt_ids = {}
         if imdb_id:
@@ -2681,7 +3021,6 @@ def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year, 
         xbmcgui.Window(10000).setProperty('script.trakt.ids', _json.dumps(trakt_ids))
         xbmc.log(f"Set script.trakt.ids: {_json.dumps(trakt_ids)}", level=xbmc.LOGINFO)
 
-    # DÃ¹ng setResolvedUrl thay vÃ¬ xbmc.Player().play() Ä‘á»ƒ trÃ¡nh play 2 láº§n
     list_item = xbmcgui.ListItem(label=movie_title, path=play_url)
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(movie_title)
@@ -2706,9 +3045,7 @@ def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year, 
     else:
         info_tag.setMediaType('movie')
 
-    # setResolvedUrl - Kodi Ä‘Ã£ biáº¿t Ä‘Ã¢y lÃ  playable item, chá»‰ cáº§n resolve URL
     xbmcplugin.setResolvedUrl(addon_handle, True, listitem=list_item)
-
 def router(paramstring):
     """
     Router xá»­ lÃ½ cÃ¡c yÃªu cáº§u tá»« Kodi, TMDB Helper vÃ  cÃ¡c lá»‡nh ná»™i bá»™.
@@ -2736,6 +3073,26 @@ def router(paramstring):
 
         elif action == 'toggle_debug_ids':
             toggle_debug_setting()
+
+        elif action == 'cycle_metadata_source':
+            cycle_metadata_source()
+            settings_menu()
+
+        elif action == 'toggle_fetch_plot':
+            toggle_bool_setting('metadata_fetch_plot', 'Tra Plot khi browse')
+            settings_menu()
+
+        elif action == 'toggle_fetch_rating':
+            toggle_bool_setting('metadata_fetch_rating', 'Tra Rating khi browse')
+            settings_menu()
+
+        elif action == 'toggle_fetch_poster':
+            toggle_bool_setting('metadata_fetch_poster', 'Tra Poster khi browse')
+            settings_menu()
+
+        elif action == 'toggle_fetch_ids_on_play':
+            toggle_bool_setting('fetch_ids_on_play', 'Tra IMDb/TMDb ID khi play')
+            settings_menu()
 
         elif action == 'set_items_per_page':
             prompt_number_setting('community_items_per_page', 'Nhập số mục mỗi trang cộng đồng', get_community_items_per_page())

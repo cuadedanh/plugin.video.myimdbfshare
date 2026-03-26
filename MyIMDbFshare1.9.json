@@ -1,0 +1,8 @@
+{
+  "name": "MyIMDb Fshare Player 1.9",
+  "plugin": "plugin.video.myimdbfshare",
+  "priority": 100,
+  "is_resolvable": "false",
+  "search_movie": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}",
+  "search_episode": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}&tvshowtitle={originaltitle}&season={season}&episode={episode}"
+}
