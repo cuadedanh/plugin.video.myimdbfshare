@@ -1,0 +1,70 @@
+name: Tự động cập nhật Kodi Repo
+
+on:
+  push:
+    branches:
+      - main  # Hoặc master tùy bạn
+    paths:
+      - 'addon.xml' # Chỉ chạy khi bạn có thay đổi ở file này (nâng version)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo Code (Repo A)
+        uses: actions/checkout@v3
+        with:
+          path: main-repo
+
+      - name: Checkout Repo Distribution (Repo B)
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.repository_owner }}/cuadedanh.github.io
+          token: ${{ secrets.PAT_TOKEN }}
+          path: dist-repo
+
+      - name: Thiết lập Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Đóng gói và Cập nhật
+        run: |
+          # 1. Đọc ID và Version từ addon.xml (Sử dụng Python để đọc cho chính xác)
+          ADDON_ID=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('main-repo/addon.xml').getroot().get('id'))")
+          VERSION=$(python3 -c "import xml.etree.ElementTree as ET; print(ET.parse('main-repo/addon.xml').getroot().get('version'))")
+          
+          echo "Đang xử lý $ADDON_ID phiên bản $VERSION"
+
+          # 2. Tạo cấu trúc thư mục trong Repo B
+          mkdir -p dist-repo/$ADDON_ID
+          
+          # 3. Nén code thành file zip (ĐÚNG CẤU TRÚC KODI)
+          cd main-repo
+
+          # Tạo thư mục tạm có tên đúng addon id
+          mkdir -p ../build/$ADDON_ID
+
+          # Copy toàn bộ code vào thư mục đó
+          cp -r . ../build/$ADDON_ID/
+
+          # Xoá mấy file không cần
+          rm -rf ../build/$ADDON_ID/.git
+          rm -rf ../build/$ADDON_ID/.github
+
+          # Zip THƯ MỤC (quan trọng)
+          cd ../build
+          zip -r ../dist-repo/$ADDON_ID/$ADDON_ID-$VERSION.zip $ADDON_ID
+
+          # Copy addon.xml ra ngoài repo
+          cp $ADDON_ID/addon.xml ../dist-repo/$ADDON_ID/
+
+      - name: Đẩy thay đổi sang Repo B
+        run: |
+          cd dist-repo
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git add .
+          # Kiểm tra xem có gì thay đổi không trước khi commit
+          git diff-index --quiet HEAD || git commit -m "Cập nhật addon lên bản $VERSION"
+          git push
