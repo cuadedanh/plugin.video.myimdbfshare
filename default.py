@@ -2581,7 +2581,21 @@ def list_community(page=1):
         xbmcplugin.addDirectoryItem(handle=addon_handle, url=prev_url, listitem=xbmcgui.ListItem(f'[Trang truoc {page - 1}/{total_pages}]'), isFolder=True)
 
     xbmcplugin.endOfDirectory(addon_handle)
-def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, season=None, episode=None, tvshowtitle=None):
+def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
+                      season=None, episode=None, tvshowtitle=None,
+                      include=None, exclude=None):
+    """
+    Lọc kết quả tìm kiếm Fshare bằng keyword match trên tên file.
+
+    include : chuỗi các nhóm AND ngăn cách bằng ';', trong mỗi nhóm dùng '|' cho OR.
+              Ví dụ: '2160p|4k|uhd;atmos|ddp;mkv|iso'
+              -> (2160p OR 4k OR uhd) AND (atmos OR ddp) AND (mkv OR iso)
+    exclude : chuỗi keyword ngăn cách bằng '|', bất kỳ keyword nào match thì loại.
+              Ví dụ: 'hdcam|cam|telesync'
+
+    Match theo token (tách tên file theo . - _ space) để tránh false positive.
+    Fallback: nếu không có kết quả -> bỏ dần nhóm include từ cuối -> hiện tất cả.
+    """
     content_type = 'movies' if not season else 'episodes'
     xbmcplugin.setContent(addon_handle, content_type)
     xbmcplugin.setPluginCategory(addon_handle, f'Links: {movie_title}')
@@ -2594,6 +2608,118 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None, seaso
         return
 
     links.sort(key=lambda x: x.get('size', 0), reverse=True)
+
+    # ------------------------------------------------------------------ #
+    #  INCLUDE / EXCLUDE FILTER                                           #
+    #  include='2160p|4k|uhd;atmos|ddp;mkv|iso'                          #
+    #    ';' phan cach nhom AND, '|' phan cach gia tri OR trong nhom      #
+    #  exclude='hdcam|cam|telesync'                                       #
+    #    '|' phan cach keyword, bat ky keyword nao match thi loai         #
+    #  Match theo token de tranh false positive (ts != TrueHD)            #
+    #  Fallback: bo dan tung nhom include tu cuoi -> hien tat ca          #
+    # ------------------------------------------------------------------ #
+
+    def _tokenize(filename):
+        """Tach ten file thanh set token lowercase de match chinh xac."""
+        name = os.path.basename(filename or '').lower()
+        raw = re.split(r'[\.\-_ ]+', name)
+        tokens = set(t for t in raw if t)
+        # Them full name (bo extension) de match chuoi co dau nhu 'web-dl', 'dts-hd'
+        name_no_ext = re.sub(r'\.[a-z0-9]{2,4}$', '', name)
+        tokens.add(name_no_ext)
+        return tokens
+
+    def _token_match(keyword, tokens, full_name):
+        """Kiem tra keyword co match trong tokens hoac full_name khong."""
+        kw = keyword.strip().lower()
+        if not kw:
+            return False
+        if kw in tokens:
+            return True
+        if kw in full_name:
+            return True
+        return False
+
+    def _parse_include_groups(include_param):
+        """Phan tich include='A|B;C|D' thanh [['a','b'], ['c','d']]."""
+        if not include_param:
+            return []
+        groups = []
+        for group_str in str(include_param).split(';'):
+            group_str = group_str.strip()
+            if not group_str:
+                continue
+            keywords = [k.strip().lower() for k in group_str.split('|') if k.strip()]
+            if keywords:
+                groups.append(keywords)
+        return groups
+
+    def _parse_exclude_list(exclude_param):
+        """Phan tich exclude='A|B|C' thanh ['a','b','c']."""
+        if not exclude_param:
+            return []
+        return [k.strip().lower() for k in str(exclude_param).split('|') if k.strip()]
+
+    def _item_matches(link_info, include_groups_check):
+        """
+        True neu khong bi exclude VA tat ca nhom include deu co it nhat 1 match.
+        """
+        fname  = link_info.get('title', '')
+        full   = fname.lower()
+        tokens = _tokenize(fname)
+
+        # exclude: loai ngay neu bat ky keyword nao match
+        for kw in exclude_list:
+            if _token_match(kw, tokens, full):
+                return False
+
+        # include: AND giua cac nhom, OR trong moi nhom
+        for group in include_groups_check:
+            if not any(_token_match(kw, tokens, full) for kw in group):
+                return False
+
+        return True
+
+    include_groups = _parse_include_groups(include)
+    exclude_list   = _parse_exclude_list(exclude)
+    has_filter     = bool(include_groups or exclude_list)
+
+    if has_filter:
+        # Buoc 1: thu filter day du
+        filtered = [l for l in links if _item_matches(l, include_groups)]
+
+        # Buoc 2: fallback - bo dan nhom include tu cuoi neu khong co ket qua
+        fallback_label = ''
+        current_groups = include_groups[:]
+        while not filtered and current_groups:
+            dropped = current_groups.pop()
+            xbmc.log(
+                f"show_fshare_links: no results, dropping include group {dropped}",
+                level=xbmc.LOGINFO
+            )
+            filtered = [l for l in links if _item_matches(l, current_groups)]
+            if filtered:
+                fallback_label = '|'.join(dropped)
+
+        # Buoc 3: van trang → hien tat ca (van giu exclude)
+        if not filtered:
+            filtered = [l for l in links if _item_matches(l, [])]
+            fallback_label = 'tat ca'
+
+        # Buoc 4: van trang (exclude qua chat) → hien luon tat ca
+        if not filtered:
+            filtered = links
+            fallback_label = 'tat ca (bo ca exclude)'
+
+        if fallback_label and include_groups:
+            req = ';'.join('|'.join(g) for g in include_groups)
+            xbmcgui.Dialog().notification(
+                'FShare Filter',
+                f'Fallback: [{req}] -> {fallback_label}',
+                xbmcgui.NOTIFICATION_INFO, 3500
+            )
+
+        links = filtered
 
     list_items = []
     lookup_cache = {}
@@ -3010,21 +3136,31 @@ def router(paramstring):
             movie_year = params.get('year')
             imdb_id = params.get('imdb')
             tmdb_id = params.get('tmdb')
-            
+
             # Các tham số dành riêng cho TV Show
             season = params.get('season')
             episode = params.get('episode')
             tvshowtitle = params.get('tvshowtitle')
-            
+
+            # Filter keyword tu do (tu player entry TMDb Helper)
+            # include: 'A|B;C|D'  -> (A OR B) AND (C OR D)
+            #   vi du: '2160p|4k|uhd;atmos|ddp;mkv|iso'
+            # exclude: 'X|Y|Z'    -> loai file chua bat ky keyword X, Y, Z
+            #   vi du: 'hdcam|cam|telesync'
+            include = params.get('include') or None
+            exclude = params.get('exclude') or None
+
             if movie_title:
                 show_fshare_links(
-                    movie_title, 
-                    movie_year, 
-                    imdb_id=imdb_id, 
-                    tmdb_id=tmdb_id, 
-                    season=season, 
-                    episode=episode, 
-                    tvshowtitle=tvshowtitle
+                    movie_title,
+                    movie_year,
+                    imdb_id=imdb_id,
+                    tmdb_id=tmdb_id,
+                    season=season,
+                    episode=episode,
+                    tvshowtitle=tvshowtitle,
+                    include=include,
+                    exclude=exclude,
                 )
 
         
