@@ -24,12 +24,15 @@ VIDEO_FILE_EXTENSIONS = (
 # URL tìm kiếm Fshare.vn (có thể cần điều chỉnh nếu Fshare thay đổi)
 FSHARE_SEARCH_API_URL = "https://api.timfshare.com/v1/string-query-search?query="
 
-TMDB_API_KEY = 'YOUR_TMDB_API_KEY'  # Thay bằng API key của bạn
-
 SETTINGS_FILE = os.path.join(ADDON_PATH, 'settings.json')
 TMDB_LOOKUP_CACHE_FILE = os.path.join(ADDON_PATH, 'tmdb_lookup_cache.json')
 GSHEET_CACHE_FILE = os.path.join(ADDON_PATH, 'gsheet_cache.json')
 GSHEET_CACHE_TTL = 300
+
+
+def notify(msg, title='Fshare', duration=3000):
+    """Hiển thị thông báo nhanh trong Kodi."""
+    xbmcgui.Dialog().notification(title, msg, time=duration)
 
 def load_local_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -226,68 +229,167 @@ def toggle_debug_setting():
     xbmcgui.Dialog().notification('Thành công', 'Đã đổi chế độ hiện debug IMDb/TMDb', time=3000)
 
 
+def _make_setting_item(label, plot):
+    """Tạo ListItem cho settings menu với label và plot mô tả."""
+    item = xbmcgui.ListItem(label)
+    item.getVideoInfoTag().setPlot(plot)
+    return item
+
+
 def settings_menu():
     xbmcplugin.setPluginCategory(addon_handle, 'Cài đặt')
     xbmcplugin.setContent(addon_handle, 'files')
 
-    tmdb_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_tmdb_api_key'})
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=tmdb_url, listitem=xbmcgui.ListItem('[TMDb API Key]'), isFolder=False)
+    def add(url, item, is_folder=False):
+        xbmcplugin.addDirectoryItem(handle=addon_handle, url=url, listitem=item, isFolder=is_folder)
 
-    gsheet_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'change_gsheet'})
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=gsheet_url, listitem=xbmcgui.ListItem('[Google Sheet ID cộng đồng]'), isFolder=False)
+    # =========================================================
+    # NHÓM 1 — TÀI KHOẢN FSHARE
+    # =========================================================
+    fshare_user = get_local_setting('fshare_username', '') or '(chưa nhập)'
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_fshare_credentials'}),
+        _make_setting_item(
+            f'[Tài khoản Fshare: {fshare_user}]',
+            'Nhập email và mật khẩu tài khoản Fshare.vn của bạn.\n'
+            'Addon dùng thông tin này để tự đăng nhập và lấy link download trực tiếp.\n'
+            'Bắt buộc phải có tài khoản Fshare VIP để xem phim.\n'
+            'Email phải nhập đầy đủ (VD: ten@gmail.com).'
+        )
+    )
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'fshare_relogin'}),
+        _make_setting_item(
+            '[🔄 Đăng nhập lại Fshare]',
+            'Xóa session cũ và đăng nhập lại Fshare ngay bây giờ.\n'
+            'Dùng khi bấm play báo lỗi hoặc không lấy được link — thường do token hết hạn.\n'
+            'Addon sẽ tự thử đăng nhập lại khi cần, nhưng nếu vẫn lỗi thì bấm mục này.'
+        )
+    )
 
-    strm_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'choose_strm_dir'})
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=strm_url, listitem=xbmcgui.ListItem('[Thư mục lưu .strm và download]'), isFolder=False)
+    # =========================================================
+    # NHÓM 2 — API KEYS
+    # =========================================================
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_tmdb_api_key'}),
+        _make_setting_item(
+            '[TMDb API Key]',
+            'API Key của The Movie Database (TMDb) — dùng để tra plot, poster, rating.\n'
+            'Lấy miễn phí tại: themoviedb.org → Tài khoản → Cài đặt → API.\n\n'
+            'Thứ tự ưu tiên:\n'
+            '1. Key nhập tại đây (nếu có)\n'
+            '2. Key của addon TMDb Helper (tự động đọc nếu bạn đã cài)\n'
+            '3. Không tra được nếu cả hai đều trống.\n\n'
+            'Nếu đã cài TMDb Helper và nó đang hoạt động bình thường,\n'
+            'bạn không cần nhập key ở đây.'
+        )
+    )
 
-    # --- Nhóm: Nguồn metadata ---
-    source_labels = {'none': 'Không tra', 'tmdb': 'TMDb', 'omdb': 'OMDb'}
+    # =========================================================
+    # NHÓM 3 — METADATA KHI DUYỆT DANH SÁCH
+    # =========================================================
+    source_labels = {'none': 'Tắt (nhanh nhất)', 'tmdb': 'TMDb', 'omdb': 'OMDb'}
     current_source = get_metadata_source()
-    source_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'cycle_metadata_source'})
-    source_item = xbmcgui.ListItem(f'[Nguồn metadata: {source_labels[current_source]}]')
-    source_item.getVideoInfoTag().setPlot(
-        'Chọn nguồn tra metadata khi duyệt danh sách. '
-        'Không tra: tắt hoàn toàn (nhanh nhất). '
-        'TMDb: cần TMDb API Key. '
-        'OMDb: cần OMDb API Key. '
-        'Bấm để chuyển vòng giữa các tùy chọn.'
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'cycle_metadata_source'}),
+        _make_setting_item(
+            f'[Metadata khi duyệt danh sách: {source_labels[current_source]}]',
+            'Kiểm soát việc tra thông tin phim khi hiển thị danh sách link.\n'
+            'Mỗi file được tra riêng — các file cùng phim dùng cache, không gọi API lặp lại.\n\n'
+            'Tắt: Không tra API — danh sách hiện nhanh nhất, không có poster/plot.\n'
+            'TMDb: Tra đầy đủ — plot, poster, rating. Với TV show: tra thêm plot từng tập.\n'
+            '       Cần TMDb API Key. Chậm hơn với nhiều file.\n'
+            'OMDb: Tra cơ bản — chỉ lấy IMDb ID. Nhanh hơn TMDb. Cần OMDb API Key.\n\n'
+            'Lưu ý: Tắt mục này KHÔNG ảnh hưởng đến việc tra metadata khi play.\n'
+            'Bấm để chuyển vòng giữa các lựa chọn.'
+        )
     )
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=source_url, listitem=source_item, isFolder=False)
 
-    # --- Tra ID khi play ---
+    # =========================================================
+    # NHÓM 4 — METADATA KHI PLAY
+    # =========================================================
     ids_on_play_state = 'Bật' if get_fetch_ids_on_play() else 'Tắt'
-    ids_play_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_fetch_ids_on_play'})
-    ids_play_item = xbmcgui.ListItem(f'[Tra IMDb/TMDb ID khi play: {ids_on_play_state}]')
-    ids_play_item.getVideoInfoTag().setPlot(
-        'Khi bật: nếu item chưa có IMDb/TMDb ID lúc play, addon sẽ tự tra API để lấy ID '
-        'trước khi phát — giúp Trakt scrobble và TMDb Helper hiện metadata đúng. '
-        'Khi tắt: chỉ dùng ID đã có sẵn từ lúc browse.'
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_fetch_ids_on_play'}),
+        _make_setting_item(
+            f'[Tra metadata & ID khi play: {ids_on_play_state}]',
+            'Kiểm soát việc tra thông tin phim ngay trước khi phát video.\n\n'
+            'Khi Bật: Nếu link chưa có TMDb ID hoặc IMDb ID (ví dụ từ tìm kiếm thủ công), '
+            'addon sẽ tự tra API để lấy đủ thông tin trước khi phát.\n'
+            'Lợi ích: Trakt scrobble hoạt động đúng, skin hiện metadata chính xác.\n\n'
+            'Khi Tắt: Chỉ dùng thông tin đã có sẵn từ lúc duyệt danh sách.\n\n'
+            'Hoạt động độc lập với "Metadata khi duyệt" — kể cả khi duyệt tắt, '
+            'play vẫn có thể tra nếu mục này đang Bật.'
+        )
     )
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=ids_play_url, listitem=ids_play_item, isFolder=False)
 
+    # =========================================================
+    # NHÓM 5 — CỘNG ĐỒNG CHIA SẺ
+    # =========================================================
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'change_gsheet'}),
+        _make_setting_item(
+            '[Google Sheet ID — Danh sách cộng đồng]',
+            'Nhập ID hoặc URL của Google Sheet chứa danh sách link Fshare cộng đồng.\n'
+            'Sheet phải được chia sẻ công khai (Anyone with the link can view).\n'
+            'Có thể dán URL đầy đủ hoặc chỉ phần ID trong đường dẫn.'
+        )
+    )
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_items_per_page'}),
+        _make_setting_item(
+            '[Số mục mỗi trang — Danh sách cộng đồng]',
+            'Số lượng phim hiển thị trên mỗi trang trong danh sách cộng đồng.\n'
+            'Giá trị nhỏ (10–20): chuyển trang nhanh hơn.\n'
+            'Giá trị lớn (50–100): ít phải chuyển trang hơn nhưng tải lâu hơn.'
+        )
+    )
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_cache_ttl'}),
+        _make_setting_item(
+            '[Thời gian giữ cache — Danh sách cộng đồng]',
+            'Số giây addon giữ lại dữ liệu Google Sheet trước khi tải lại từ internet.\n'
+            'Giá trị cao (600+): chuyển trang nhanh, ít tốn băng thông, nhưng cập nhật chậm.\n'
+            'Giá trị thấp (60–120): dữ liệu luôn mới nhất nhưng tải lại thường xuyên hơn.\n'
+            'Mặc định: 300 giây (5 phút).'
+        )
+    )
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'clear_gsheet_cache'}),
+        _make_setting_item(
+            '[🗑 Xóa cache danh sách cộng đồng]',
+            'Xóa dữ liệu Google Sheet đã lưu tạm trong máy.\n'
+            'Dùng khi danh sách cộng đồng bị cũ hoặc muốn tải lại ngay lập tức\n'
+            'mà không cần chờ hết thời gian cache.'
+        )
+    )
+
+    # =========================================================
+    # NHÓM 6 — FILE & THƯ MỤC
+    # =========================================================
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'choose_strm_dir'}),
+        _make_setting_item(
+            '[Thư mục lưu file .strm và download]',
+            'Chọn thư mục mặc định để lưu file .strm và file download từ Fshare.\n'
+            'File .strm là shortcut nhỏ trỏ tới link Fshare — có thể thêm vào thư viện Kodi.\n'
+            'Nếu chưa chọn, addon sẽ hỏi mỗi lần tạo file.'
+        )
+    )
+
+    # =========================================================
+    # NHÓM 7 — DEBUG / NÂNG CAO
+    # =========================================================
     debug_state = 'Bật' if get_show_lookup_debug_ids() else 'Tắt'
-    debug_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_debug_ids'})
-    debug_item = xbmcgui.ListItem(f'[Hiện debug IMDb/TMDb IDs: {debug_state}]')
-    debug_info = debug_item.getVideoInfoTag()
-    debug_info.setTitle('Hiện debug IMDb/TMDb IDs')
-    debug_info.setPlot('Bật hoặc tắt việc hiển thị IMDb ID và TMDb ID ngay trong danh sách link. Hữu ích khi kiểm tra item đã resolve đúng ID cho Trakt trước khi phát.')
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=debug_url, listitem=debug_item, isFolder=False)
-
-    items_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_items_per_page'})
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=items_url, listitem=xbmcgui.ListItem('[Số mục mỗi trang cộng đồng]'), isFolder=False)
-
-    ttl_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_cache_ttl'})
-    ttl_item = xbmcgui.ListItem('[Thời gian giữ cache cộng đồng]')
-    ttl_info = ttl_item.getVideoInfoTag()
-    ttl_info.setTitle('Thời gian giữ cache cộng đồng')
-    ttl_info.setPlot('Xác định số giây addon giữ lại dữ liệu Google Sheet trước khi tải lại. Giá trị cao giúp chuyển trang nhanh hơn nhưng cập nhật chậm hơn; giá trị thấp giúp dữ liệu mới hơn nhưng sẽ tải lại thường xuyên hơn.')
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=ttl_url, listitem=ttl_item, isFolder=False)
-
-    clear_cache_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'clear_gsheet_cache'})
-    clear_cache_item = xbmcgui.ListItem('[Xóa cache cộng đồng]')
-    clear_cache_info = clear_cache_item.getVideoInfoTag()
-    clear_cache_info.setTitle('Xóa cache cộng đồng')
-    clear_cache_info.setPlot('Xóa dữ liệu Google Sheet đã lưu tạm trong máy. Dùng khi bạn muốn buộc addon tải lại danh sách cộng đồng mới nhất ngay ở lần mở tiếp theo.')
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=clear_cache_url, listitem=clear_cache_item, isFolder=False)
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_debug_ids'}),
+        _make_setting_item(
+            f'[Hiện ID debug trong danh sách: {debug_state}]',
+            'Hiện IMDb ID và TMDb ID ngay trên tên mỗi link trong danh sách.\n'
+            'Dùng để kiểm tra addon đã nhận đúng ID chưa trước khi play.\n'
+            'Tắt khi không cần — danh sách trông gọn hơn.'
+        )
+    )
 
     xbmcplugin.endOfDirectory(addon_handle)
 
@@ -347,50 +449,8 @@ def get_omdb_api_key():
     return ''
 
 
-def get_trakt_client_id():
-    trakt_key_path = xbmcvfs.translatePath(
-        'special://home/addons/plugin.video.themoviedb.helper/resources/tmdbhelper/lib/api/api_keys/trakt.py'
-    )
-    try:
-        if os.path.exists(trakt_key_path):
-            with open(trakt_key_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            matches = re.findall(r"CLIENT_ID\s*=\s*'([^']*)'", content)
-            for value in matches:
-                if value:
-                    return value.strip()
-    except Exception:
-        pass
-    return ''
-
-
-def lookup_trakt_tmdb_id(imdb_id, trakt_type='movie'):
-    client_id = get_trakt_client_id()
-    if not client_id or not imdb_id:
-        return ''
-
-    headers = {
-        'trakt-api-version': '2',
-        'trakt-api-key': client_id,
-        'Content-Type': 'application/json',
-    }
-
-    resp = requests.get(
-        f'https://api.trakt.tv/search/imdb/{imdb_id}',
-        headers=headers,
-        params={'type': trakt_type},
-        timeout=5
-    )
-    resp.raise_for_status()
-
-    for item in resp.json() or []:
-        if item.get('type') != trakt_type:
-            continue
-        ids = item.get(trakt_type, {}).get('ids', {})
-        if str(ids.get('imdb', '') or '') != str(imdb_id):
-            continue
-        return str(ids.get('tmdb', '') or '')
-    return ''
+# get_trakt_client_id / lookup_trakt_tmdb_id đã bị xóa.
+# Trakt scrobble dùng script.trakt.ids Window property với tmdb hoặc imdb — chỉ cần 1 trong 2.
 
 
 def lookup_omdb_movie(api_key, title, year=None):
@@ -490,22 +550,28 @@ def lookup_fallback_metadata(title=None, year=None, tvshowtitle=None, season=Non
         return lookup_omdb_movie(omdb_api_key, title, year)
 
 
+TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/'
+
 def lookup_tmdb_movie(api_key, title, year=None):
-    """Tra TMDb chi lay tmdb_id - 1 request duy nhat. TMDb Helper tu lo plot/poster."""
+    """Tra TMDb: search lay tmdb_id + plot + poster + fanart + rating (vi-VN uu tien)."""
     if not api_key or not title:
         return {}
 
-    params = {
-        'api_key': api_key,
-        'query': title,
-        'language': 'en-US',
-    }
+    params = {'api_key': api_key, 'query': title, 'language': 'vi-VN'}
     if year:
         params['year'] = str(year)
 
     resp = requests.get('https://api.themoviedb.org/3/search/movie', params=params, timeout=5)
     resp.raise_for_status()
     results = resp.json().get('results', [])
+
+    # Fallback sang en-US neu vi-VN khong co ket qua
+    if not results:
+        params['language'] = 'en-US'
+        resp = requests.get('https://api.themoviedb.org/3/search/movie', params=params, timeout=5)
+        resp.raise_for_status()
+        results = resp.json().get('results', [])
+
     if not results:
         return {}
 
@@ -514,35 +580,42 @@ def lookup_tmdb_movie(api_key, title, year=None):
     if not movie_id:
         return {}
 
+    poster_path = movie.get('poster_path') or ''
+    fanart_path = movie.get('backdrop_path') or ''
+
     return {
         'mediatype': 'movie',
-        'title': movie.get('title', title),
-        'year': (movie.get('release_date', '') or '')[:4],
+        'title':   movie.get('title', title),
+        'year':    (movie.get('release_date', '') or '')[:4],
         'tmdb_id': str(movie_id),
         'imdb_id': '',
-        'plot': '',
-        'rating': '',
-        'poster': '',
-        'fanart': '',
+        'plot':    movie.get('overview', '') or '',
+        'rating':  str(movie.get('vote_average', '') or ''),
+        'poster':  f"{TMDB_IMAGE_BASE}w500{poster_path}" if poster_path else '',
+        'fanart':  f"{TMDB_IMAGE_BASE}w1280{fanart_path}" if fanart_path else '',
     }
 
 
 def lookup_tmdb_episode(api_key, tvshowtitle, season, episode):
-    """Tra TMDb chi lay tmdb_id cua show - 1 request duy nhat. TMDb Helper tu lo phan con lai."""
+    """Tra TMDb: search show -> lay show_id + episode details (plot, still, poster, fanart).
+    Request 1: search/tv -> show_id, show poster/fanart
+    Request 2: tv/{show_id}/season/{s}/episode/{e} -> episode plot + still
+    """
     if not api_key or not tvshowtitle:
         return {}
 
-    resp = requests.get(
-        'https://api.themoviedb.org/3/search/tv',
-        params={
-            'api_key': api_key,
-            'query': tvshowtitle,
-            'language': 'en-US',
-        },
-        timeout=5
-    )
+    # Request 1: tim show
+    params = {'api_key': api_key, 'query': tvshowtitle, 'language': 'vi-VN'}
+    resp = requests.get('https://api.themoviedb.org/3/search/tv', params=params, timeout=5)
     resp.raise_for_status()
     results = resp.json().get('results', [])
+
+    if not results:
+        params['language'] = 'en-US'
+        resp = requests.get('https://api.themoviedb.org/3/search/tv', params=params, timeout=5)
+        resp.raise_for_status()
+        results = resp.json().get('results', [])
+
     if not results:
         return {}
 
@@ -551,27 +624,64 @@ def lookup_tmdb_episode(api_key, tvshowtitle, season, episode):
     if not show_id:
         return {}
 
+    show_poster  = show.get('poster_path') or ''
+    show_fanart  = show.get('backdrop_path') or ''
+    show_name    = show.get('name', tvshowtitle)
+    show_year    = (show.get('first_air_date', '') or '')[:4]
+
+    # Request 2: lay episode plot + still — chỉ khi metadata_source='tmdb' (full detail).
+    # Nếu source='omdb' hoặc gọi từ play (force_source), bỏ qua để tiết kiệm request.
+    ep_plot  = ''
+    ep_still = ''
+    if get_metadata_source() == 'tmdb':
+        try:
+            ep_resp = requests.get(
+                f'https://api.themoviedb.org/3/tv/{show_id}/season/{season}/episode/{episode}',
+                params={'api_key': api_key, 'language': 'vi-VN'},
+                timeout=5
+            )
+            if ep_resp.status_code == 200:
+                ep_data  = ep_resp.json()
+                ep_plot  = ep_data.get('overview', '') or ''
+                ep_still = ep_data.get('still_path') or ''
+                if not ep_plot:
+                    ep_resp2 = requests.get(
+                        f'https://api.themoviedb.org/3/tv/{show_id}/season/{season}/episode/{episode}',
+                        params={'api_key': api_key, 'language': 'en-US'},
+                        timeout=5
+                    )
+                    if ep_resp2.status_code == 200:
+                        ep_plot = ep_resp2.json().get('overview', '') or ''
+        except Exception as e:
+            xbmc.log(f"lookup_tmdb_episode: episode detail fetch error: {e}", level=xbmc.LOGWARNING)
+
+    thumb = f"{TMDB_IMAGE_BASE}w300{ep_still}" if ep_still else (
+            f"{TMDB_IMAGE_BASE}w500{show_poster}" if show_poster else '')
+
     return {
-        'mediatype': 'episode',
-        'title': f"{show.get('name', tvshowtitle)} S{int(season):02d}E{int(episode):02d}",
-        'tvshowtitle': show.get('name', tvshowtitle),
-        'year': (show.get('first_air_date', '') or '')[:4],
-        'season': str(season),
-        'episode': str(episode),
-        'tmdb_id': str(show_id),
-        'imdb_id': '',
-        'plot': '',
-        'rating': '',
-        'poster': '',
-        'fanart': '',
-        'thumb': '',
+        'mediatype':    'episode',
+        'title':        f"{show_name} S{int(season):02d}E{int(episode):02d}",
+        'tvshowtitle':  show_name,
+        'year':         show_year,
+        'season':       str(season),
+        'episode':      str(episode),
+        'tmdb_id':      str(show_id),
+        'imdb_id':      '',
+        'plot':         ep_plot,
+        'rating':       str(show.get('vote_average', '') or ''),
+        'poster':       f"{TMDB_IMAGE_BASE}w500{show_poster}" if show_poster else '',
+        'fanart':       f"{TMDB_IMAGE_BASE}w1280{show_fanart}" if show_fanart else '',
+        'thumb':        thumb,
     }
 
 
 def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, episode=None,
                          force_source=None):
-    """Tra cuu ID tu TMDb (cho ra tmdb_id) hoac OMDb (cho ra imdb_id) tuy theo setting.
-    TMDb Helper se tu lo plot/poster/rating dua tren ID nay.
+    """Tra cuu ID tu TMDb hoac OMDb tuy theo setting.
+    - TMDb Helper player: truyen san tmdb/imdb qua URL -> khong goi ham nay.
+    - List cong dong / search manual: chua co ID -> goi ham nay.
+      Neu OMDb chi tra duoc imdb_id, tu dong convert sang tmdb_id qua Trakt API
+      de skin ah2 / TMDb Helper hien duoc poster/plot dung.
     force_source: 'tmdb' | 'omdb' | None (dung setting)
     """
     source = force_source or get_metadata_source()
@@ -612,27 +722,111 @@ def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, e
             xbmc.log(f"OMDb fallback lookup error: {e}", level=xbmc.LOGWARNING)
             data = {}
 
+    # imdb_id (OMDb) hoac tmdb_id (TMDb) la du cho Trakt scrobble qua script.trakt.ids.
+    # Khong can convert qua Trakt API.
+
     if data:
         cache[cache_key] = data
         save_tmdb_lookup_cache(cache)
 
     return data or {}
 
+def apply_stream_props(list_item, stream_tags):
+    """Gán tất cả stream properties vào ListItem từ stream_tags dict.
+    Dùng chung cho browse_fshare_folder, show_fshare_links và list_community.
+    """
+    if not stream_tags:
+        return
 
-    if get_metadata_fetch_plot():
-        resolved['plot'] = resolved.get('plot') or raw_meta.get('plot', '')
-    if get_metadata_fetch_rating():
-        resolved['rating'] = resolved.get('rating') or raw_meta.get('rating', '')
-    if get_metadata_fetch_poster():
-        resolved['poster'] = resolved.get('poster') or raw_meta.get('poster', '')
-        resolved['fanart'] = resolved.get('fanart') or raw_meta.get('fanart', '')
+    video_stream = stream_tags.get('video_stream', {})
+    audio_stream = stream_tags.get('audio_stream', {})
+    if video_stream:
+        list_item.addStreamInfo('video', video_stream)
+    if audio_stream:
+        list_item.addStreamInfo('audio', audio_stream)
 
-    # Cap nhat title/year/tvshowtitle tu API
-    resolved['title'] = raw_meta.get('title', '') or resolved.get('title', '')
-    resolved['year'] = raw_meta.get('year', '') or resolved.get('year', '')
-    resolved['tvshowtitle'] = raw_meta.get('tvshowtitle', '') or resolved.get('tvshowtitle', '')
-    return resolved
-
+    st = stream_tags
+    prop_map = {
+        'video_tag':                    st.get('video_tag', ''),
+        'audio_tag':                    st.get('audio_tag', ''),
+        'VideoResolution':              st.get('video_resolution', ''),
+        'VideoCodec':                   st.get('video_codec', ''),
+        'VideoSource':                  st.get('video_source', ''),
+        'VideoHDR':                     st.get('hdr', ''),
+        'HdrType':                      st.get('hdr_type', ''),
+        'AudioCodec':                   st.get('audio_codec', ''),
+        'AudioChannels':                st.get('audio_channels', ''),
+        'AudioLanguage':                st.get('audio_language', ''),
+        'AudioProfile':                 st.get('audio_profile', ''),
+        'AudioObject':                  st.get('audio_object', ''),
+        'AudioAtmos':                   st.get('audio_object', ''),
+        'AudioCodec2':                  st.get('audio_object', ''),
+        'AudioCodecAlt':                st.get('audio_object', ''),
+        'AudioCodecExtra':              st.get('audio_profile', ''),
+        'AudioCodecCombined':           st.get('audio_profile', ''),
+        'VideoPlayer.AudioCodec':       st.get('audio_codec', ''),
+        'VideoPlayer.AudioChannels':    st.get('audio_channels', ''),
+        'VideoPlayer.AudioProfile':     st.get('audio_profile', ''),
+        'VideoPlayer.AudioObject':      st.get('audio_object', ''),
+        'VideoPlayer.AudioCodec2':      st.get('audio_object', ''),
+        'VideoPlayer.AudioCodecCombined': st.get('audio_profile', '') or st.get('audio_codec', ''),
+        'VideoPlayer.VideoResolution':  st.get('video_resolution', ''),
+        'VideoPlayer.VideoCodec':       st.get('video_codec', ''),
+        'VideoPlayer.VideoSource':      st.get('video_source', ''),
+        'VideoPlayer.HdrType':          st.get('hdr_type', ''),
+        'VideoPlayer.HDRType':          st.get('hdr', ''),
+        'VideoInfo.VideoResolution':    st.get('video_resolution', ''),
+        'VideoInfo.VideoCodec':         st.get('video_codec', ''),
+        'VideoInfo.VideoSource':        st.get('video_source', ''),
+        'VideoInfo.AudioCodec':         st.get('audio_codec', ''),
+        'VideoInfo.AudioChannels':      st.get('audio_channels', ''),
+        'VideoInfo.AudioLanguage':      st.get('audio_language', ''),
+        'VideoInfo.AudioProfile':       st.get('audio_profile', ''),
+        'VideoInfo.AudioObject':        st.get('audio_object', ''),
+        'VideoInfo.AudioCodec2':        st.get('audio_object', ''),
+        'VideoInfo.AudioCodecCombined': st.get('audio_profile', '') or st.get('audio_codec', ''),
+        'VideoInfo.HDRType':            st.get('hdr', ''),
+        'VideoInfo.HdrType':            st.get('hdr_type', ''),
+        'media.videoresolution':        st.get('video_resolution', ''),
+        'media.videocodec':             st.get('video_codec', ''),
+        'media.videosource':            st.get('video_source', ''),
+        'media.hdr':                    st.get('hdr', ''),
+        'media.hdrtype':                st.get('hdr_type', ''),
+        'media.audiocodec':             st.get('audio_codec', ''),
+        'media.audiochannels':          st.get('audio_channels', ''),
+        'media.audiolanguage':          st.get('audio_language', ''),
+        'media.audioprofile':           st.get('audio_profile', ''),
+        'media.audioobject':            st.get('audio_object', ''),
+        'media.resolution':             st.get('video_resolution', ''),
+        'media.codec':                  st.get('video_codec', ''),
+        'media.channels':               st.get('audio_channels', ''),
+        'media.hdr':                    st.get('hdr', ''),
+        'media.source':                 st.get('video_source', ''),
+        'media.audio':                  st.get('audio_codec', ''),
+        'media.audioprofile':           st.get('audio_profile', ''),
+        'media.audioobject':            st.get('audio_object', ''),
+        'media.audio2':                 st.get('audio_object', ''),
+        'audio.codec':                  st.get('audio_codec', ''),
+        'audio.channels':               st.get('audio_channels', ''),
+        'audio.language':               st.get('audio_language', ''),
+        'audio.profile':                st.get('audio_profile', ''),
+        'audio.object':                 st.get('audio_object', ''),
+        'audio.codec2':                 st.get('audio_object', ''),
+        'audio.codec_combined':         st.get('audio_profile', '') or st.get('audio_codec', ''),
+        'video.codec':                  st.get('video_codec', ''),
+        'video.resolution':             st.get('video_resolution', ''),
+        'video.source':                 st.get('video_source', ''),
+        'video.hdr':                    st.get('hdr', ''),
+        'video.hdrtype':                st.get('hdr_type', ''),
+        'audio_codec_combined':         st.get('audio_profile', '') or st.get('audio_codec', ''),
+        'HasAtmos':    'true' if st.get('audio_object', '').lower() == 'atmos' else '',
+        'AudioIsAtmos':'true' if st.get('audio_object', '').lower() == 'atmos' else '',
+        'HasDTSX':     'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
+        'AudioIsDTSX': 'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
+    }
+    for prop_name, prop_value in prop_map.items():
+        if prop_value:
+            list_item.setProperty(prop_name, str(prop_value))
 
 def parse_stream_tags_from_filename(filename):
     """
@@ -746,12 +940,13 @@ def parse_stream_tags_from_filename(filename):
     if re.search(r'ATMOS', normalized):
         audio_object = 'Atmos'
 
-    if re.search(r'DTS[.\- ]?X', normalized):
+    # DTS:X phải có X không theo sau bởi số (tránh nhầm DTS.x265, DTS.x264 → X265/X264 sau upper())
+    if re.search(r'DTS[.\- ]?X(?!\d)', normalized):
         audio_profile = 'DTS:X'
 
     audio_codec_patterns = [
         (r'TRUEHD', 'TrueHD'),
-        (r'DTS[.\- ]?X', 'DTS:X'),
+        (r'DTS[.\- ]?X(?!\d)', 'DTS:X'),
         (r'DTS[.\- ]?HD[.\- ]?MA', 'DTS-HD MA'),
         (r'DTS[.\- ]?HD', 'DTS-HD'),
         (r'(?<!TRUE)DTS(?![A-Z])', 'DTS'),
@@ -1138,209 +1333,7 @@ def create_strm_file(title, url, movie_info=None):
     except Exception as e:
         xbmcgui.Dialog().ok("Lỗi", f"Không tạo được file:\n{e}")
         xbmc.log(f"STRM error: {e}", level=xbmc.LOGERROR)
-    return
 
-    """
-    Tạo file .strm với tên chuẩn hóa để Kodi nhận diện chất lượng.
-    """
-    def parse_language_prefix(filename):
-        langs = []
-        prefix_match = re.match(r'^\s*\((.*?)\)\s*', filename)
-        if prefix_match:
-            prefix = prefix_match.group(1).upper()
-            if any(x in prefix for x in ['THUYET MINH', 'TM']):
-                langs.append('TM')
-            if any(x in prefix for x in ['SUB VIET', 'SUBVIET', 'VIETSUB']):
-                langs.append('VieSub')
-            filename = filename[prefix_match.end():]
-        return filename, langs
-
-    def normalize_tech_part(tech_part):
-        normalize_map = {
-            # Độ phân giải
-            '2160P': '2160p', '1080P': '1080p', '720P': '720p',
-            '480P': '480p', '576P': '576p',
-            # Nguồn
-            'BLURAY': 'BluRay', 'BLU-RAY': 'BluRay', 'BDRIP': 'BDRip',
-            'WEBRIP': 'WEBRip', 'WEB-DL': 'WEB-DL', 'WEBDL': 'WEB-DL',
-            'HDTV': 'HDTV', 'DVDRIP': 'DVDRip', 'REMUX': 'REMUX',
-            'AMZN': 'AMZN', 'NF': 'NF', 'HMAX': 'HMAX',
-            'DSNP': 'DSNP', 'MA': 'MA', 'UHD': 'UHD',
-            # Codec video
-            'X264': 'x264', 'X265': 'x265',
-            'H264': 'H.264', 'H.264': 'H.264',
-            'H265': 'H.265', 'H.265': 'H.265',
-            'HEVC': 'HEVC', 'AVC': 'AVC', 'AV1': 'AV1',
-            # Codec audio
-            'DTS-HD': 'DTS-HD', 'DTS-HD-MA': 'DTS-HD.MA', 'DTSX': 'DTS-X',
-            'DTS:X': 'DTS-X', 'DTS-X': 'DTS-X', 'DTS': 'DTS', 'TRUEHD': 'TrueHD',
-            'ATMOS': 'Atmos', 'DD5.1': 'DD5.1', 'DDP5.1': 'DDP5.1',
-            'DDP': 'DDP', 'AAC': 'AAC', 'AC3': 'AC3',
-            'FLAC': 'FLAC', 'MP3': 'MP3',
-            # HDR
-            'HDR10+': 'HDR10+', 'HDR10': 'HDR10', 'HDR': 'HDR',
-            'DOLBY VISION': 'DV', 'DV': 'DV', 'HLG': 'HLG',
-            # Ngôn ngữ
-            'VIE': 'ViE', 'ENG': 'ENG', 'VIET': 'ViE',
-            # Bit depth
-            '10BIT': '10bit', '8BIT': '8bit',
-        }
-        tokens = tech_part.split('.')
-        normalized = []
-        for token in tokens:
-            upper = token.upper()
-            if upper in normalize_map:
-                normalized.append(normalize_map[upper])
-            else:
-                normalized.append(token)
-        return '.'.join(normalized)
-
-    def parse_media_info(filename):
-        info = {}
-        # Tìm năm trong tên file kể cả trong ngoặc
-        year_match = re.search(r'\b(19|20)\d{2}\b', filename)
-        info['year'] = year_match.group(0) if year_match else ''
-
-        # Thay (2008) → 2008, giữ lại năm làm mốc tách tên phim
-        filename_clean = re.sub(r'\(((19|20)\d{2})\)', r'\1', filename)
-        # Xóa các ngoặc khác không phải năm
-        filename_clean = re.sub(r'\(.*?\)', '', filename_clean)
-        # Xóa số thứ tự đầu như "02. "
-        filename_clean = re.sub(r'^\d+\.\s*', '', filename_clean)
-        filename_clean = re.sub(r'\s+', ' ', filename_clean).strip()
-
-        # Tên phim = phần trước năm
-        year_match2 = re.search(r'\b(19|20)\d{2}\b', filename_clean)
-        if year_match2:
-            title_part = filename_clean[:year_match2.start()]
-        else:
-            title_part = filename_clean
-        title_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', title_part, flags=re.IGNORECASE)
-        title_part = re.sub(r'[._]', ' ', title_part).strip()
-        title_part = re.sub(r'[\s\-]+$', '', title_part)
-        info['parsed_title'] = title_part
-
-        return info
-
-    # Xử lý tên file: tách prefix ngôn ngữ trước
-    clean_title, lang_tags = parse_language_prefix(title)
-
-    # Parse năm và tên phim
-    media = parse_media_info(clean_title)
-
-    # Lấy title và year
-    movie_title = ''
-    year = media['year']
-    if movie_info:
-        if movie_info.get('title'):
-            movie_title = movie_info.get('title')
-        year = movie_info.get('year', '') or year
-    if not movie_title:
-        movie_title = media['parsed_title']
-
-    # Tạo bản clean để lấy tech_part
-    # Thay (2008) → 2008 để giữ năm làm mốc
-    clean_for_tech = re.sub(r'\(((19|20)\d{2})\)', r'\1', clean_title)
-    # Xóa các ngoặc khác không phải năm
-    clean_for_tech = re.sub(r'\(.*?\)', '', clean_for_tech)
-    # Xóa số thứ tự đầu
-    clean_for_tech = re.sub(r'^\d+\.\s*', '', clean_for_tech)
-    clean_for_tech = re.sub(r'\s+', ' ', clean_for_tech).strip()
-
-    # Lấy phần kỹ thuật từ năm trở đi
-    year_match = re.search(r'\b(19|20)\d{2}\b', clean_for_tech)
-    season_match = re.search(r'\bS\d{2}E\d{2}\b', clean_for_tech, re.IGNORECASE)
-    if year_match:
-        tech_part = clean_for_tech[year_match.start():]
-        tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
-        tech_part = tech_part.replace(' ', '.')
-        tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
-        tech_part = normalize_tech_part(tech_part)
-    elif season_match:
-        tech_part = clean_for_tech[season_match.start():]
-        tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
-        tech_part = tech_part.replace(' ', '.')
-        tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
-        tech_part = normalize_tech_part(tech_part)
-    else:
-        tech_part = ''
-
-    # Ghép tên phim + phần kỹ thuật + tag ngôn ngữ sau năm
-    name_part = movie_title.replace(' ', '.')
-
-    if tech_part and lang_tags:
-        year_in_tech = re.search(r'\b(19|20)\d{2}\b', tech_part)
-        if year_in_tech:
-            insert_pos = year_in_tech.end()
-            tech_part = tech_part[:insert_pos] + '.' + '.'.join(lang_tags) + tech_part[insert_pos:]
-        else:
-            tech_part = '.'.join(lang_tags) + '.' + tech_part
-
-    safe_title = make_safe_media_name(title, movie_info)
-
-# Lấy thư mục đã lưu lần trước
-    dialog = xbmcgui.Dialog()
-    saved_dir = load_strm_dir()
-
-    if saved_dir:
-        choice = dialog.yesno(
-            'Thư mục lưu .strm',
-            f"Dùng lại thư mục:\n{saved_dir}",
-            nolabel='Đổi thư mục',
-            yeslabel='Dùng lại'
-        )
-        if choice:
-            strm_dir = saved_dir
-        else:
-            strm_dir = dialog.browse(3, 'Chọn thư mục lưu file .strm', 'files')
-            if not strm_dir:
-                return
-            save_strm_dir(strm_dir)
-    else:
-        strm_dir = dialog.browse(3, 'Chọn thư mục lưu file .strm', 'files')
-        if not strm_dir:
-            return
-        save_strm_dir(strm_dir)
-
-    strm_path = os.path.join(strm_dir, f"{safe_title}.strm")
-
-    try:
-        strm_file = xbmcvfs.File(strm_path, 'w')
-        strm_file.write(url)
-        strm_file.close()
-        xbmc.log(f"Created STRM: {strm_path}", level=xbmc.LOGINFO)
-
-        # Scan chỉ file vừa tạo vào library qua JSON-RPC
-        import json as _json
-        scan_query = _json.dumps({
-            "jsonrpc": "2.0",
-            "method": "VideoLibrary.Scan",
-            "params": {
-                "directory": strm_path,  # Chỉ scan đúng file này
-                "showdialogs": False
-            },
-            "id": 1
-        })
-        xbmc.executeJSONRPC(scan_query)
-
-        # Poll chờ scan xong tối đa 15 giây
-        for _ in range(15):
-            xbmc.sleep(1000)
-            status_query = _json.dumps({
-                "jsonrpc": "2.0",
-                "method": "XBMC.GetInfoBooleans",
-                "params": {"booleans": ["Library.IsScanning"]},
-                "id": 2
-            })
-            result = _json.loads(xbmc.executeJSONRPC(status_query))
-            if not result.get('result', {}).get('Library.IsScanning', False):
-                break
-
-        xbmcgui.Dialog().ok("Thành công", f"Đã tạo và thêm vào library:\n{safe_title}.strm")
-
-    except Exception as e:
-        xbmcgui.Dialog().ok("Lỗi", f"Không tạo được file:\n{e}")
-        xbmc.log(f"STRM error: {e}", level=xbmc.LOGERROR)
 
 def download_fshare(fshare_url, title, url, movie_info=None):
     """
@@ -1350,16 +1343,9 @@ def download_fshare(fshare_url, title, url, movie_info=None):
     """
     import threading
 
-    # --- Lấy token/session từ VietmediaF settings ---
+    # --- Lấy token/session từ fshare tích hợp ---
     def get_fshare_token():
-        try:
-            vietmediaf = xbmcaddon.Addon('plugin.video.vietmediaF')
-            token = vietmediaf.getSetting('tokenfshare')
-            session_id = vietmediaf.getSetting('sessionfshare')
-            return token, session_id
-        except Exception as e:
-            xbmc.log(f"Không lấy được VietmediaF settings: {e}", level=xbmc.LOGERROR)
-            return None, None
+        return fshare_check_session()
 
     # --- Lấy direct download link từ Fshare API ---
     def get_direct_link(fshare_url, token, session_id):
@@ -1398,104 +1384,6 @@ def download_fshare(fshare_url, title, url, movie_info=None):
             return None
 
     # --- Tạo tên file theo quy tắc .strm ---
-    def make_safe_name(title, movie_info):
-        return make_safe_media_name(title, movie_info)
-        """
-
-        def parse_language_prefix(filename):
-            langs = []
-            prefix_match = re.match(r'^\s*\((.*?)\)\s*', filename)
-            if prefix_match:
-                prefix = prefix_match.group(1).upper()
-                if any(x in prefix for x in ['THUYET MINH', 'TM']):
-                    langs.append('TM')
-                if any(x in prefix for x in ['SUB VIET', 'SUBVIET', 'VIETSUB']):
-                    langs.append('VieSub')
-                filename = filename[prefix_match.end():]
-            return filename, langs
-
-        def normalize_tech_part(tech_part):
-            normalize_map = {
-                '2160P': '2160p', '1080P': '1080p', '720P': '720p',
-                '480P': '480p', '576P': '576p',
-                'BLURAY': 'BluRay', 'BLU-RAY': 'BluRay', 'BDRIP': 'BDRip',
-                'WEBRIP': 'WEBRip', 'WEB-DL': 'WEB-DL', 'WEBDL': 'WEB-DL',
-                'HDTV': 'HDTV', 'DVDRIP': 'DVDRip', 'REMUX': 'REMUX',
-                'AMZN': 'AMZN', 'NF': 'NF', 'HMAX': 'HMAX',
-                'DSNP': 'DSNP', 'MA': 'MA', 'UHD': 'UHD',
-                'X264': 'x264', 'X265': 'x265',
-                'H264': 'H.264', 'H.264': 'H.264',
-                'H265': 'H.265', 'H.265': 'H.265',
-                'HEVC': 'HEVC', 'AVC': 'AVC', 'AV1': 'AV1',
-                'DTS-HD': 'DTS-HD', 'DTS': 'DTS', 'TRUEHD': 'TrueHD',
-                'ATMOS': 'Atmos', 'DD5.1': 'DD5.1', 'DDP5.1': 'DDP5.1',
-                'DDP': 'DDP', 'AAC': 'AAC', 'AC3': 'AC3',
-                'FLAC': 'FLAC', 'MP3': 'MP3',
-                'HDR10+': 'HDR10+', 'HDR10': 'HDR10', 'HDR': 'HDR',
-                'DOLBY VISION': 'DV', 'DV': 'DV',
-                'VIE': 'ViE', 'ENG': 'ENG', 'VIET': 'ViE',
-                '10BIT': '10bit', '8BIT': '8bit',
-            }
-            return '.'.join([normalize_map.get(t.upper(), t) for t in tech_part.split('.')])
-
-        clean_title, lang_tags = parse_language_prefix(title)
-
-        # Tên phim từ movie_info hoặc parse từ tên file
-        movie_title_parsed = ''
-        if movie_info and movie_info.get('title'):
-            movie_title_parsed = movie_info.get('title')
-
-        if not movie_title_parsed:
-            clean_for_name = re.sub(r'\(((19|20)\d{2})\)', r'\1', clean_title)
-            clean_for_name = re.sub(r'\(.*?\)', '', clean_for_name)
-            clean_for_name = re.sub(r'^\d+\.\s*', '', clean_for_name)
-            clean_for_name = re.sub(r'\s+', ' ', clean_for_name).strip()
-            ym = re.search(r'\b(19|20)\d{2}\b', clean_for_name)
-            title_part = clean_for_name[:ym.start()] if ym else clean_for_name
-            title_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', title_part, flags=re.IGNORECASE)
-            title_part = re.sub(r'[._]', ' ', title_part).strip()
-            movie_title_parsed = re.sub(r'[\s\-]+$', '', title_part)
-
-        # Tech part
-        clean_for_tech = re.sub(r'\(((19|20)\d{2})\)', r'\1', clean_title)
-        clean_for_tech = re.sub(r'\(.*?\)', '', clean_for_tech)
-        clean_for_tech = re.sub(r'^\d+\.\s*', '', clean_for_tech)
-        clean_for_tech = re.sub(r'\s+', ' ', clean_for_tech).strip()
-
-        year_match = re.search(r'\b(19|20)\d{2}\b', clean_for_tech)
-        season_match = re.search(r'\bS\d{2}E\d{2}\b', clean_for_tech, re.IGNORECASE)
-        if year_match:
-            tech_part = clean_for_tech[year_match.start():]
-            tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
-            tech_part = tech_part.replace(' ', '.')
-            tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
-            tech_part = normalize_tech_part(tech_part)
-        elif season_match:
-            # TV series không có năm: lấy từ SxxExx trở đi
-            tech_part = clean_for_tech[season_match.start():]
-            tech_part = re.sub(r'\.(mkv|mp4|wmv|iso|ts)$', '', tech_part, flags=re.IGNORECASE)
-            tech_part = tech_part.replace(' ', '.')
-            tech_part = re.sub(r'\.+', '.', tech_part).strip('.')
-            tech_part = normalize_tech_part(tech_part)
-        else:
-            tech_part = ''
-
-        name_part = movie_title_parsed.replace(' ', '.')
-        if tech_part and lang_tags:
-            year_in_tech = re.search(r'\b(19|20)\d{2}\b', tech_part)
-            if year_in_tech:
-                insert_pos = year_in_tech.end()
-                tech_part = tech_part[:insert_pos] + '.' + '.'.join(lang_tags) + tech_part[insert_pos:]
-            else:
-                tech_part = '.'.join(lang_tags) + '.' + tech_part
-
-        safe_name = f"{name_part}.{tech_part}" if tech_part else name_part
-        safe_name = re.sub(r'[\\/*?:"<>|()\[\]]', '_', safe_name)
-        safe_name = re.sub(r'_+', '_', safe_name)
-        return safe_name.strip('_').strip('.')
-
-    # --- Kiểm tra fshare_url ---
-        """
 
     if not fshare_url:
         # Thử extract từ plugin URL
@@ -1644,7 +1532,7 @@ def timfshare(query):
 
         if furl:
             furl = re.search(r"(.*)\?", furl).group(1) if '?' in furl else furl
-            link = f'plugin://plugin.video.vietmediaF?action=play&url={furl}'
+            link = f'plugin://plugin.video.myimdbfshare?action=play_fshare_direct&url={furl}'
             playable = type_f != '0'
         else:
             continue
@@ -1711,9 +1599,9 @@ def show_fshare_files_from_api_response(api_response_str):
             
             list_item.setProperty('IsPlayable', 'true')
             play_url = sys.argv[0] + '?' + urllib.parse.urlencode({
-                'action': 'play_fshare_file',
-                'url': furl,
-                'title': name,
+                'action': 'play_fshare_direct',
+                'url':    furl,
+                'title':  name,
             })
             list_items.append((play_url, list_item, False))
         except Exception as e:
@@ -1726,16 +1614,200 @@ def show_fshare_files_from_api_response(api_response_str):
         xbmcgui.Dialog().ok('Thông báo', 'Không có file Fshare nào để hiển thị từ dữ liệu API.')
     
     xbmcplugin.endOfDirectory(addon_handle)
-def get_vietmediaf_fshare_credentials():
+# ---------------------------------------------------------------------------
+# FSHARE AUTH — tích hợp trực tiếp, không phụ thuộc plugin.video.vietmediaF
+# ---------------------------------------------------------------------------
+FSHARE_LOGIN_API      = 'https://api.fshare.vn/api/user/login'
+FSHARE_DOWNLOAD_API   = 'https://api2.fshare.vn/api/session/download'
+FSHARE_FILEOPS_GET    = 'https://api.fshare.vn/api/fileops/get'
+FSHARE_USER_AGENT     = 'kodivietmediaf-K58W6U'
+FSHARE_APP_KEY        = 'dMnqMMZMUnN5YpvKENaEhdQQ5jxDqddt'
+
+
+def fshare_get_credentials():
+    """Lấy username/password từ settings của addon này."""
+    username = get_local_setting('fshare_username', '')
+    password = get_local_setting('fshare_password', '')
+    return username.strip(), password.strip()
+
+
+def fshare_prompt_credentials():
+    """
+    Hỏi user nhập email + password Fshare ngay trong Kodi (không cần vào Settings).
+    Lưu vào settings và trả về (username, password).
+    Trả về ('', '') nếu user hủy.
+    """
+    # Nhập email
+    kb_user = xbmc.Keyboard('', 'Nhập email Fshare (VD: ten@gmail.com)')
+    kb_user.doModal()
+    if not kb_user.isConfirmed():
+        return '', ''
+    username = kb_user.getText().strip()
+    if not username or '@' not in username:
+        xbmcgui.Dialog().notification('Fshare', 'Email không hợp lệ', time=3000)
+        return '', ''
+
+    # Nhập password (ẩn ký tự)
+    kb_pass = xbmc.Keyboard('', 'Nhập mật khẩu Fshare', True)
+    kb_pass.doModal()
+    if not kb_pass.isConfirmed():
+        return '', ''
+    password = kb_pass.getText().strip()
+    if not password:
+        xbmcgui.Dialog().notification('Fshare', 'Mật khẩu không được để trống', time=3000)
+        return '', ''
+
+    set_local_setting('fshare_username', username)
+    set_local_setting('fshare_password', password)
+    xbmc.log(f"Fshare credentials saved for: {username}", level=xbmc.LOGINFO)
+    return username, password
+
+
+def fshare_login():
+    """Đăng nhập Fshare, lưu token/session_id vào settings, trả về (token, session_id)."""
+    username, password = fshare_get_credentials()
+    if not username or not password:
+        # Hỏi inline thay vì chỉ thông báo
+        xbmcgui.Dialog().notification('Fshare', 'Chưa có tài khoản — vui lòng nhập', time=2000)
+        xbmc.sleep(500)
+        username, password = fshare_prompt_credentials()
+        if not username or not password:
+            return '', ''
+    payload = json.dumps({
+        'app_key':    FSHARE_APP_KEY,
+        'user_email': username,
+        'password':   password,
+    })
+    headers = {'cache-control': 'no-cache', 'User-Agent': FSHARE_USER_AGENT}
     try:
-        vietmediaf = xbmcaddon.Addon('plugin.video.vietmediaF')
-        token = (vietmediaf.getSetting('tokenfshare') or '').strip()
-        session_id = (vietmediaf.getSetting('sessionfshare') or '').strip()
-        if token and session_id:
+        r = requests.post(FSHARE_LOGIN_API, data=payload, headers=headers, verify=False, timeout=15)
+        data = r.json()
+        if r.status_code == 200:
+            token      = data.get('token', '')
+            session_id = data.get('session_id', '')
+            set_local_setting('fshare_token',      token)
+            set_local_setting('fshare_session_id', session_id)
+            set_local_setting('fshare_timelog',    str(int(time.time())))
+            xbmc.log(f"Fshare login OK: {username}", level=xbmc.LOGINFO)
             return token, session_id
+        else:
+            msg = data.get('msg', f'HTTP {r.status_code}')
+            notify(f'Đăng nhập Fshare thất bại: {msg}')
+            xbmc.log(f"Fshare login failed {r.status_code}: {msg}", level=xbmc.LOGERROR)
     except Exception as e:
-        xbmc.log(f"Không lấy được tài khoản Fshare từ VietmediaF: {e}", level=xbmc.LOGERROR)
+        xbmc.log(f"Fshare login error: {e}", level=xbmc.LOGERROR)
+        notify(f'Lỗi đăng nhập Fshare: {e}')
     return '', ''
+
+
+def fshare_is_valid(session_id):
+    """Kiểm tra session còn hợp lệ không."""
+    if not session_id:
+        return False
+    try:
+        headers = {'User-Agent': FSHARE_USER_AGENT, 'Cookie': f'session_id={session_id}'}
+        r = requests.get('https://api.fshare.vn/api/user/get', headers=headers,
+                         verify=False, timeout=10)
+        data = r.json()
+        return r.status_code == 200 and 'error' not in data and data.get('account_type')
+    except Exception:
+        return False
+
+
+def fshare_check_session():
+    """
+    Trả về (token, session_id) hợp lệ.
+    Tự động login lại nếu session hết hạn.
+    """
+    token      = get_local_setting('fshare_token', '')
+    session_id = get_local_setting('fshare_session_id', '')
+    if token and session_id and fshare_is_valid(session_id):
+        return token, session_id
+    xbmc.log("Fshare session expired or missing — re-login", level=xbmc.LOGINFO)
+    return fshare_login()
+
+
+def fshare_logout():
+    """Xóa token/session_id đã lưu, buộc login lại lần sau."""
+    set_local_setting('fshare_token', '')
+    set_local_setting('fshare_session_id', '')
+    xbmc.log("Fshare: logged out (token cleared)", level=xbmc.LOGINFO)
+
+
+def fshare_relogin():
+    """Xóa session cũ rồi đăng nhập lại ngay, thông báo kết quả."""
+    fshare_logout()
+    token, session_id = fshare_login()
+    if token and session_id:
+        xbmcgui.Dialog().notification('Fshare', 'Đăng nhập lại thành công', time=3000)
+    else:
+        xbmcgui.Dialog().notification('Fshare', 'Đăng nhập thất bại — kiểm tra tài khoản', time=4000)
+
+
+def fshare_get_download_link(fshare_url, token=None, session_id=None):
+    """
+    Resolve fshare URL thành CDN link trực tiếp.
+    Trả về CDN URL (str) hoặc '' nếu thất bại.
+    Tự động force re-login và retry 1 lần nếu token expired (location rỗng hoặc lỗi auth).
+    """
+    if not token or not session_id:
+        token, session_id = fshare_check_session()
+    if not token or not session_id:
+        return ''
+
+    url_with_share = fshare_url
+    if '?' not in url_with_share:
+        url_with_share += '?share=8805984'
+    else:
+        url_with_share += '&share=8805984'
+
+    def _do_post(tok, sid):
+        payload = json.dumps({'zipflag': 0, 'url': url_with_share, 'password': '', 'token': tok})
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent':   FSHARE_USER_AGENT,
+            'Cookie':       f'session_id={sid}',
+        }
+        r = requests.post(FSHARE_DOWNLOAD_API, data=payload, headers=headers,
+                          verify=False, timeout=20)
+        data = r.json()
+        return r.status_code, data.get('location', '')
+
+    try:
+        status, cdn_url = _do_post(token, session_id)
+        if status == 200 and cdn_url:
+            xbmc.log(f"Fshare CDN OK: {fshare_url[:60]}", level=xbmc.LOGINFO)
+            return cdn_url
+
+        # Token expired: 200 nhưng location rỗng, hoặc lỗi auth
+        xbmc.log(
+            f"Fshare download API {status}: location empty — forcing re-login",
+            level=xbmc.LOGWARNING
+        )
+        # Xóa token cũ trước khi re-login để tránh vòng lặp
+        set_local_setting('fshare_token', '')
+        set_local_setting('fshare_session_id', '')
+
+        token, session_id = fshare_login()
+        if not token or not session_id:
+            xbmc.log("Fshare re-login failed", level=xbmc.LOGERROR)
+            return ''
+
+        # Retry lần 2
+        status2, cdn_url2 = _do_post(token, session_id)
+        if status2 == 200 and cdn_url2:
+            xbmc.log(f"Fshare CDN OK (after re-login): {fshare_url[:60]}", level=xbmc.LOGINFO)
+            return cdn_url2
+
+        xbmc.log(f"Fshare download API retry {status2}: still no CDN url", level=xbmc.LOGERROR)
+    except Exception as e:
+        xbmc.log(f"Fshare get_download_link error: {e}", level=xbmc.LOGERROR)
+    return ''
+
+
+# Alias để các hàm cũ dùng get_vietmediaf_fshare_credentials() vẫn hoạt động
+def get_vietmediaf_fshare_credentials():
+    return fshare_check_session()
 
 
 FSHARE_FILE_REALNAME_CACHE = {}
@@ -1788,18 +1860,8 @@ def get_fshare_file_realname(file_url):
 
 
 def trigger_vietmediaf_login_and_wait():
-    """Goi action account_fshare cua VietmediaF de dang nhap lai Fshare,
-    sau do cho toi da 60 giay cho den khi token moi duoc luu vao settings."""
-    xbmc.log("Fshare: Triggering VietmediaF account_fshare login...", level=xbmc.LOGINFO)
-    old_token, _ = get_vietmediaf_fshare_credentials()
-    xbmc.executebuiltin('RunPlugin(plugin://plugin.video.vietmediaF?action=account_fshare)')
-    for _ in range(60):
-        xbmc.sleep(1000)
-        new_token, new_session = get_vietmediaf_fshare_credentials()
-        if new_token and new_session and new_token != old_token:
-            xbmc.log("Fshare: New token detected after login.", level=xbmc.LOGINFO)
-            return new_token, new_session
-    return get_vietmediaf_fshare_credentials()
+    """Login Fshare trực tiếp (không cần VietmediaF)."""
+    return fshare_login()
 
 
 def _parse_fshare_folder_response(data):
@@ -1944,6 +2006,13 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
             is_folder = item_type == '0'
             item_url = f"https://www.fshare.vn/{'folder' if is_folder else 'file'}/{linkcode}"
 
+            # Nếu là file nhưng tên không có extension video → thử lấy tên thật từ Fshare API
+            if not is_folder and not any(name.lower().endswith(ext) for ext in VIDEO_FILE_EXTENSIONS):
+                real_name = get_fshare_file_realname(item_url)
+                if real_name:
+                    xbmc.log(f"browse_fshare_folder: real_name '{name}' -> '{real_name}'", level=xbmc.LOGDEBUG)
+                    name = real_name
+
             if is_folder:
                 browse_url = sys.argv[0] + '?' + urllib.parse.urlencode({
                     'action': 'browse_fshare_folder',
@@ -1990,6 +2059,10 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 if resolved_meta:
                     resolved_imdb_id = resolved_meta.get('imdb_id', '') or ''
                     resolved_tmdb_id = resolved_meta.get('tmdb_id', '') or ''
+                    resolved_plot         = resolved_meta.get('plot', '') or ''
+                    resolved_rating       = resolved_meta.get('rating', '') or ''
+                    resolved_poster_path  = resolved_meta.get('poster', '') or ''
+                    resolved_fanart       = resolved_meta.get('fanart', '') or ''
                     if is_episode_item:
                         effective_title = resolved_meta.get('title', '') or effective_title
                         effective_tvshowtitle = resolved_meta.get('tvshowtitle', '') or effective_tvshowtitle
@@ -2055,74 +2128,7 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 list_item.setArt(art)
 
             if is_video_file:
-                video_stream = stream_tags.get('video_stream', {})
-                audio_stream = stream_tags.get('audio_stream', {})
-                if video_stream:
-                    list_item.addStreamInfo('video', video_stream)
-                if audio_stream:
-                    list_item.addStreamInfo('audio', audio_stream)
-
-                prop_map = {
-                    'video_tag': stream_tags.get('video_tag', ''),
-                    'audio_tag': stream_tags.get('audio_tag', ''),
-                    'VideoResolution': stream_tags.get('video_resolution', ''),
-                    'VideoCodec': stream_tags.get('video_codec', ''),
-                    'VideoSource': stream_tags.get('video_source', ''),
-                    'VideoHDR': stream_tags.get('hdr', ''),
-                    'HdrType': stream_tags.get('hdr_type', ''),
-                    'AudioCodec': stream_tags.get('audio_codec', ''),
-                    'AudioChannels': stream_tags.get('audio_channels', ''),
-                    'AudioLanguage': stream_tags.get('audio_language', ''),
-                    'AudioProfile': stream_tags.get('audio_profile', ''),
-                    'AudioObject': stream_tags.get('audio_object', ''),
-                    'AudioAtmos': stream_tags.get('audio_object', ''),
-                    'AudioCodec2': stream_tags.get('audio_object', ''),
-                    'AudioCodecAlt': stream_tags.get('audio_object', ''),
-                    'AudioCodecExtra': stream_tags.get('audio_profile', ''),
-                    'AudioCodecCombined': stream_tags.get('audio_profile', ''),
-                    'VideoPlayer.AudioCodec': stream_tags.get('audio_codec', ''),
-                    'VideoPlayer.AudioChannels': stream_tags.get('audio_channels', ''),
-                    'VideoPlayer.AudioProfile': stream_tags.get('audio_profile', ''),
-                    'VideoPlayer.AudioObject': stream_tags.get('audio_object', ''),
-                    'VideoPlayer.VideoResolution': stream_tags.get('video_resolution', ''),
-                    'VideoPlayer.VideoCodec': stream_tags.get('video_codec', ''),
-                    'VideoPlayer.VideoSource': stream_tags.get('video_source', ''),
-                    'VideoPlayer.HdrType': stream_tags.get('hdr_type', ''),
-                    'VideoInfo.VideoResolution': stream_tags.get('video_resolution', ''),
-                    'VideoInfo.VideoCodec': stream_tags.get('video_codec', ''),
-                    'VideoInfo.VideoSource': stream_tags.get('video_source', ''),
-                    'VideoInfo.AudioCodec': stream_tags.get('audio_codec', ''),
-                    'VideoInfo.AudioChannels': stream_tags.get('audio_channels', ''),
-                    'VideoInfo.AudioLanguage': stream_tags.get('audio_language', ''),
-                    'VideoInfo.AudioProfile': stream_tags.get('audio_profile', ''),
-                    'media.videoresolution': stream_tags.get('video_resolution', ''),
-                    'media.videocodec': stream_tags.get('video_codec', ''),
-                    'media.videosource': stream_tags.get('video_source', ''),
-                    'media.hdr': stream_tags.get('hdr', ''),
-                    'media.hdrtype': stream_tags.get('hdr_type', ''),
-                    'media.audiocodec': stream_tags.get('audio_codec', ''),
-                    'media.audiochannels': stream_tags.get('audio_channels', ''),
-                    'media.audiolanguage': stream_tags.get('audio_language', ''),
-                    'media.audioprofile': stream_tags.get('audio_profile', ''),
-                    'media.audioobject': stream_tags.get('audio_object', ''),
-                    'audio.codec': stream_tags.get('audio_codec', ''),
-                    'audio.channels': stream_tags.get('audio_channels', ''),
-                    'audio.language': stream_tags.get('audio_language', ''),
-                    'audio.profile': stream_tags.get('audio_profile', ''),
-                    'audio.object': stream_tags.get('audio_object', ''),
-                    'video.codec': stream_tags.get('video_codec', ''),
-                    'video.resolution': stream_tags.get('video_resolution', ''),
-                    'video.source': stream_tags.get('video_source', ''),
-                    'video.hdr': stream_tags.get('hdr', ''),
-                    'video.hdrtype': stream_tags.get('hdr_type', ''),
-                    'HasAtmos': 'true' if stream_tags.get('audio_object', '').lower() == 'atmos' else '',
-                    'AudioIsAtmos': 'true' if stream_tags.get('audio_object', '').lower() == 'atmos' else '',
-                    'HasDTSX': 'true' if 'dts:x' in stream_tags.get('audio_profile', '').lower() else '',
-                    'AudioIsDTSX': 'true' if 'dts:x' in stream_tags.get('audio_profile', '').lower() else '',
-                }
-                for prop_name, prop_value in prop_map.items():
-                    if prop_value:
-                        list_item.setProperty(prop_name, str(prop_value))
+                apply_stream_props(list_item, stream_tags)
 
             if show_lookup_debug_ids:
                 list_item.setProperty('debug.imdb_id', resolved_imdb_id)
@@ -2130,16 +2136,16 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 list_item.setProperty('debug.lookup_status', 'ok' if (resolved_imdb_id or resolved_tmdb_id) else 'missing')
 
             list_item.setProperty('IsPlayable', 'true')
+            # Kodi nhớ ListItem đã build đủ metadata — play_fshare_direct chỉ cần CDN url
             play_params = {
-                'action': 'play_trakt',
-                'url': f'plugin://plugin.video.vietmediaF?action=play&url={item_url}',
-                'imdb': resolved_imdb_id,
-                'tmdb': resolved_tmdb_id,
-                'title': effective_title,
-                'filename': name,
-                'year': effective_year,
-                'season': effective_season,
-                'episode': effective_episode,
+                'action':      'play_fshare_direct',
+                'url':         item_url,
+                'imdb':        resolved_imdb_id,
+                'tmdb':        resolved_tmdb_id,
+                'title':       effective_title,
+                'year':        effective_year,
+                'season':      effective_season,
+                'episode':     effective_episode,
                 'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
             }
             play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
@@ -2449,84 +2455,7 @@ def list_community(page=1):
                 list_item.setArt(art)
 
             if is_video_file:
-                video_stream = stream_tags.get('video_stream', {})
-                audio_stream = stream_tags.get('audio_stream', {})
-                if video_stream:
-                    list_item.addStreamInfo('video', video_stream)
-                if audio_stream:
-                    list_item.addStreamInfo('audio', audio_stream)
-
-                prop_map = {
-                    'video_tag': stream_tags.get('video_tag', ''),
-                    'audio_tag': stream_tags.get('audio_tag', ''),
-                    'VideoResolution': stream_tags.get('video_resolution', ''),
-                    'VideoCodec': stream_tags.get('video_codec', ''),
-                    'VideoSource': stream_tags.get('video_source', ''),
-                    'VideoHDR': stream_tags.get('hdr', ''),
-                    'HdrType': stream_tags.get('hdr_type', ''),
-                    'AudioCodec': stream_tags.get('audio_codec', ''),
-                    'AudioChannels': stream_tags.get('audio_channels', ''),
-                    'AudioLanguage': stream_tags.get('audio_language', ''),
-                    'AudioProfile': stream_tags.get('audio_profile', ''),
-                    'AudioObject': stream_tags.get('audio_object', ''),
-                    'AudioAtmos': stream_tags.get('audio_object', ''),
-                    'AudioCodec2': stream_tags.get('audio_object', ''),
-                    'AudioCodecAlt': stream_tags.get('audio_object', ''),
-                    'AudioCodecExtra': stream_tags.get('audio_profile', ''),
-                    'AudioCodecCombined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
-                    'video_resolution': stream_tags.get('video_resolution', ''),
-                    'video_codec': stream_tags.get('video_codec', ''),
-                    'video_source': stream_tags.get('video_source', ''),
-                    'video_hdr': stream_tags.get('hdr', ''),
-                    'hdr_type': stream_tags.get('hdr_type', ''),
-                    'audio_codec': stream_tags.get('audio_codec', ''),
-                    'audio_channels': stream_tags.get('audio_channels', ''),
-                    'audio_language': stream_tags.get('audio_language', ''),
-                    'audio_profile': stream_tags.get('audio_profile', ''),
-                    'audio_object': stream_tags.get('audio_object', ''),
-                    'VideoPlayer.VideoResolution': stream_tags.get('video_resolution', ''),
-                    'VideoPlayer.VideoCodec': stream_tags.get('video_codec', ''),
-                    'VideoPlayer.VideoSource': stream_tags.get('video_source', ''),
-                    'VideoPlayer.HdrType': stream_tags.get('hdr_type', ''),
-                    'VideoPlayer.AudioCodec': stream_tags.get('audio_codec', ''),
-                    'VideoPlayer.AudioChannels': stream_tags.get('audio_channels', ''),
-                    'VideoPlayer.AudioLanguage': stream_tags.get('audio_language', ''),
-                    'VideoPlayer.AudioProfile': stream_tags.get('audio_profile', ''),
-                    'VideoInfo.VideoResolution': stream_tags.get('video_resolution', ''),
-                    'VideoInfo.VideoCodec': stream_tags.get('video_codec', ''),
-                    'VideoInfo.VideoSource': stream_tags.get('video_source', ''),
-                    'VideoInfo.AudioCodec': stream_tags.get('audio_codec', ''),
-                    'VideoInfo.AudioChannels': stream_tags.get('audio_channels', ''),
-                    'VideoInfo.AudioLanguage': stream_tags.get('audio_language', ''),
-                    'VideoInfo.AudioProfile': stream_tags.get('audio_profile', ''),
-                    'media.videoresolution': stream_tags.get('video_resolution', ''),
-                    'media.videocodec': stream_tags.get('video_codec', ''),
-                    'media.videosource': stream_tags.get('video_source', ''),
-                    'media.hdr': stream_tags.get('hdr', ''),
-                    'media.hdrtype': stream_tags.get('hdr_type', ''),
-                    'media.audiocodec': stream_tags.get('audio_codec', ''),
-                    'media.audiochannels': stream_tags.get('audio_channels', ''),
-                    'media.audiolanguage': stream_tags.get('audio_language', ''),
-                    'media.audioprofile': stream_tags.get('audio_profile', ''),
-                    'media.audioobject': stream_tags.get('audio_object', ''),
-                    'audio.codec': stream_tags.get('audio_codec', ''),
-                    'audio.channels': stream_tags.get('audio_channels', ''),
-                    'audio.language': stream_tags.get('audio_language', ''),
-                    'audio.profile': stream_tags.get('audio_profile', ''),
-                    'audio.object': stream_tags.get('audio_object', ''),
-                    'video.codec': stream_tags.get('video_codec', ''),
-                    'video.resolution': stream_tags.get('video_resolution', ''),
-                    'video.source': stream_tags.get('video_source', ''),
-                    'video.hdr': stream_tags.get('hdr', ''),
-                    'video.hdrtype': stream_tags.get('hdr_type', ''),
-                    'HasAtmos': 'true' if stream_tags.get('audio_object', '').lower() == 'atmos' else '',
-                    'AudioIsAtmos': 'true' if stream_tags.get('audio_object', '').lower() == 'atmos' else '',
-                    'HasDTSX': 'true' if 'dts:x' in stream_tags.get('audio_profile', '').lower() else '',
-                    'AudioIsDTSX': 'true' if 'dts:x' in stream_tags.get('audio_profile', '').lower() else '',
-                }
-                for prop_name, prop_value in prop_map.items():
-                    if prop_value:
-                        list_item.setProperty(prop_name, str(prop_value))
+                apply_stream_props(list_item, stream_tags)
 
             if show_lookup_debug_ids:
                 list_item.setProperty('debug.imdb_id', resolved_imdb_id)
@@ -2535,16 +2464,16 @@ def list_community(page=1):
 
             if is_playable:
                 list_item.setProperty('IsPlayable', 'true')
+                # Kodi Way: ListItem đã build đủ metadata — play_fshare_direct chỉ resolve CDN
                 play_params = {
-                    'action': 'play_trakt',
-                    'url': f'plugin://plugin.video.vietmediaF?action=play&url={link}',
-                    'imdb': resolved_imdb_id,
-                    'tmdb': resolved_tmdb_id,
-                    'title': effective_title,
-                    'filename': name,
-                    'year': effective_year,
-                    'season': effective_season,
-                    'episode': effective_episode,
+                    'action':      'play_fshare_direct',
+                    'url':         link,
+                    'imdb':        resolved_imdb_id,
+                    'tmdb':        resolved_tmdb_id,
+                    'title':       effective_title,
+                    'year':        effective_year,
+                    'season':      effective_season,
+                    'episode':     effective_episode,
                     'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
                 }
                 play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
@@ -2560,7 +2489,7 @@ def list_community(page=1):
                         'folder_name': name,
                     })
                 else:
-                    browse_url = f'plugin://plugin.video.vietmediaF?action=play&url={link}'
+                    browse_url = f'plugin://plugin.video.myimdbfshare?action=play_fshare_direct&url={link}'
                 list_items.append((browse_url, list_item, True))
 
         except Exception as e:
@@ -2596,10 +2525,23 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
     Match theo token (tách tên file theo . - _ space) để tránh false positive.
     Fallback: nếu không có kết quả -> bỏ dần nhóm include từ cuối -> hiện tất cả.
     """
+    # ------------------------------------------------------------------
+    # ĐỌC METADATA TỪ TMDB HELPER SERVICE MONITOR
+    # Đọc ngay lúc này (trước endOfDirectory) rồi encode vào URL từng link.
+    # Không dùng Window property nữa để tránh race condition.
+    # ------------------------------------------------------------------
     content_type = 'movies' if not season else 'episodes'
     xbmcplugin.setContent(addon_handle, content_type)
     xbmcplugin.setPluginCategory(addon_handle, f'Links: {movie_title}')
     show_lookup_debug_ids = get_show_lookup_debug_ids()
+    do_lookup = get_metadata_source() != 'none'
+
+    # Đọc Window context của TMDb Helper một lần — chỉ dùng làm seed ban đầu
+    # nếu file khớp đúng phim TMDb Helper đang focus.
+    # Không gán cứng cho toàn bộ vòng lặp.
+    tmdb_ctx = {}
+    if tmdb_id and do_lookup:
+        tmdb_ctx = read_tmdbhelper_context(tmdb_id=tmdb_id)
 
     links = search_fshare(movie_title, movie_year, season=season, episode=episode)
     if not links:
@@ -2685,39 +2627,23 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
     has_filter     = bool(include_groups or exclude_list)
 
     if has_filter:
-        # Buoc 1: thu filter day du
         filtered = [l for l in links if _item_matches(l, include_groups)]
 
-        # Buoc 2: fallback - bo dan nhom include tu cuoi neu khong co ket qua
-        fallback_label = ''
-        current_groups = include_groups[:]
-        while not filtered and current_groups:
-            dropped = current_groups.pop()
-            xbmc.log(
-                f"show_fshare_links: no results, dropping include group {dropped}",
-                level=xbmc.LOGINFO
-            )
-            filtered = [l for l in links if _item_matches(l, current_groups)]
-            if filtered:
-                fallback_label = '|'.join(dropped)
-
-        # Buoc 3: van trang → hien tat ca (van giu exclude)
         if not filtered:
-            filtered = [l for l in links if _item_matches(l, [])]
-            fallback_label = 'tat ca'
-
-        # Buoc 4: van trang (exclude qua chat) → hien luon tat ca
-        if not filtered:
-            filtered = links
-            fallback_label = 'tat ca (bo ca exclude)'
-
-        if fallback_label and include_groups:
-            req = ';'.join('|'.join(g) for g in include_groups)
+            # Không có kết quả khớp filter → báo rõ, không fallback âm thầm
+            req_str = ''
+            if include_groups:
+                req_str = 'include=[' + ';'.join('|'.join(g) for g in include_groups) + ']'
+            if exclude_list:
+                req_str += (' ' if req_str else '') + 'exclude=[' + '|'.join(exclude_list) + ']'
             xbmcgui.Dialog().notification(
-                'FShare Filter',
-                f'Fallback: [{req}] -> {fallback_label}',
-                xbmcgui.NOTIFICATION_INFO, 3500
+                'FShare: Không tìm thấy',
+                f'Không có file khớp filter: {req_str}',
+                xbmcgui.NOTIFICATION_WARNING, 4000
             )
+            xbmc.log(f"show_fshare_links: filter returned 0 results for: {req_str}", level=xbmc.LOGINFO)
+            xbmcplugin.endOfDirectory(addon_handle, succeeded=False)
+            return
 
         links = filtered
 
@@ -2739,30 +2665,67 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
             effective_title = f"{effective_tvshowtitle} S{effective_season.zfill(2)}E{effective_episode.zfill(2)}"
         resolved_imdb_id = str(imdb_id) if imdb_id else ''
         resolved_tmdb_id = str(tmdb_id) if tmdb_id else ''
-        resolved_plot = ''
-        resolved_rating = ''
+        resolved_plot        = ''
+        resolved_rating      = ''
         resolved_poster_path = ''
+        resolved_fanart      = ''
 
-        lookup_key = f"{effective_title}|{effective_year}|{effective_tvshowtitle}|{effective_season}|{effective_episode}"
-        if get_metadata_source() != 'none':
-            if lookup_key not in lookup_cache:
-                lookup_cache[lookup_key] = lookup_tmdb_metadata(
-                    title=effective_title if not is_episode_item else '',
-                    year=effective_year,
-                    tvshowtitle=effective_tvshowtitle if is_episode_item else '',
-                    season=effective_season,
-                    episode=effective_episode,
-                )
-            tmdb_meta = lookup_cache.get(lookup_key, {})
-            if tmdb_meta:
-                resolved_imdb_id = tmdb_meta.get('imdb_id', '') or resolved_imdb_id
-                resolved_tmdb_id = tmdb_meta.get('tmdb_id', '') or resolved_tmdb_id
-                if is_episode_item:
-                    effective_title = tmdb_meta.get('title', '') or effective_title
-                    effective_tvshowtitle = tmdb_meta.get('tvshowtitle', '') or effective_tvshowtitle
-                else:
-                    effective_title = tmdb_meta.get('title', '') or effective_title
-                    effective_year = tmdb_meta.get('year', '') or effective_year
+        # --- Validate tmdb_id từ TMDb Helper với effective_title của file ---
+        # Nếu tên file parse ra phim khác với phim TMDb Helper đang focus
+        # → reset tmdb_id, lookup riêng theo effective_title để tránh scrobble nhầm.
+        if resolved_tmdb_id and not is_episode_item:
+            file_title_clean  = re.sub(r'\s+', ' ', effective_title.lower().strip())
+            movie_title_clean = re.sub(r'\s+', ' ', (movie_title or '').lower().strip())
+            # Chấp nhận khác nhau nhỏ (năm, dấu câu) nhưng nếu tên quá khác → lookup riêng
+            if file_title_clean and movie_title_clean and file_title_clean != movie_title_clean:
+                # Kiểm tra xem effective_title có chứa movie_title không (partial match)
+                if movie_title_clean not in file_title_clean and file_title_clean not in movie_title_clean:
+                    xbmc.log(
+                        f"show_fshare_links: title mismatch '{effective_title}' vs '{movie_title}' "
+                        f"— resetting tmdb_id for per-file lookup",
+                        level=xbmc.LOGINFO
+                    )
+                    resolved_tmdb_id = ''
+                    resolved_imdb_id = ''
+
+        # --- Lookup metadata riêng cho từng file ---
+        # Cache theo effective_title+year — cùng phim chỉ gọi API 1 lần dù nhiều file.
+        if do_lookup:
+            lookup_title_key = (tvshowtitle or effective_title or movie_title or '').lower()
+            lookup_year_key  = effective_year or movie_year or ''
+            lookup_key = f"{lookup_title_key}|{lookup_year_key}|{effective_season}|{effective_episode}"
+
+            # Nếu tmdb_id còn hợp lệ và Window context có đủ data → dùng luôn, không gọi API
+            if resolved_tmdb_id and tmdb_ctx:
+                resolved_plot        = tmdb_ctx.get('plot', '')
+                resolved_rating      = tmdb_ctx.get('rating', '')
+                resolved_poster_path = tmdb_ctx.get('poster', '')
+                resolved_fanart      = tmdb_ctx.get('fanart', '')
+
+            # Nếu thiếu bất kỳ field nào hoặc tmdb_id đã bị reset → lookup API
+            if not (resolved_tmdb_id and resolved_plot and resolved_poster_path):
+                if lookup_key not in lookup_cache:
+                    lookup_cache[lookup_key] = lookup_tmdb_metadata(
+                        title       = effective_title if not is_episode_item else '',
+                        year        = effective_year or movie_year,
+                        tvshowtitle = effective_tvshowtitle if is_episode_item else '',
+                        season      = effective_season,
+                        episode     = effective_episode,
+                    )
+                tmdb_meta = lookup_cache.get(lookup_key, {})
+                if tmdb_meta:
+                    resolved_imdb_id     = tmdb_meta.get('imdb_id', '') or resolved_imdb_id
+                    resolved_tmdb_id     = tmdb_meta.get('tmdb_id', '') or resolved_tmdb_id
+                    resolved_plot        = tmdb_meta.get('plot', '')        or resolved_plot
+                    resolved_rating      = tmdb_meta.get('rating', '')      or resolved_rating
+                    resolved_poster_path = tmdb_meta.get('poster', '')      or resolved_poster_path
+                    resolved_fanart      = tmdb_meta.get('fanart', '')      or resolved_fanart
+                    if is_episode_item:
+                        effective_title       = tmdb_meta.get('title', '')       or effective_title
+                        effective_tvshowtitle = tmdb_meta.get('tvshowtitle', '') or effective_tvshowtitle
+                    else:
+                        effective_title = tmdb_meta.get('title', '') or effective_title
+                        effective_year  = tmdb_meta.get('year', '')  or effective_year
         debug_label = ''
         if show_lookup_debug_ids:
             debug_parts = []
@@ -2777,17 +2740,24 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
 
         title_label = f"{i+1}: {link_info['title']}{debug_label} - ({size_str})"
 
-        # URL gọi qua action play_trakt để set script.trakt.ids trước khi play
+        # URL gọi thẳng play_fshare_direct — 1 hop, không qua play_trakt
+        fshare_url_clean = link_info.get('fshare_url') or ''
+        if not fshare_url_clean:
+            # fallback: extract từ plugin URL nếu fshare_url chưa được set
+            raw_url = link_info.get('url', '')
+            m = re.search(r'url=(https?://(?:www\.)?fshare\.vn/[^\s&\[\]]+)', raw_url)
+            if m:
+                fshare_url_clean = urllib.parse.unquote(m.group(1))
+
         play_params = {
-            'action': 'play_trakt',
-            'url': link_info['url'],
-            'imdb': resolved_imdb_id,
-            'tmdb': resolved_tmdb_id,
-            'title': effective_title,
-            'filename': link_info.get('title', ''),
-            'year': effective_year,
-            'season': effective_season,
-            'episode': effective_episode,
+            'action':      'play_fshare_direct',
+            'url':         fshare_url_clean,
+            'imdb':        resolved_imdb_id,
+            'tmdb':        resolved_tmdb_id,
+            'title':       effective_title,
+            'year':        effective_year,
+            'season':      effective_season,
+            'episode':     effective_episode,
             'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
         }
         play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
@@ -2826,105 +2796,22 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
         else:
             info_tag.setMediaType('movie')
 
-        if resolved_poster_path:
-            list_item.setArt({'thumb': resolved_poster_path, 'poster': resolved_poster_path, 'fanart': resolved_poster_path, 'icon': resolved_poster_path})
+        if resolved_poster_path or resolved_fanart:
+            art = {}
+            if resolved_poster_path:
+                art['thumb']  = resolved_poster_path
+                art['poster'] = resolved_poster_path
+                art['icon']   = resolved_poster_path
+            if resolved_fanart:
+                art['fanart'] = resolved_fanart
+            # Art bổ sung từ TMDb Helper nếu có
+            for art_key in ('clearlogo', 'clearart', 'landscape', 'discart', 'banner'):
+                val = tmdb_ctx.get(art_key, '')
+                if val:
+                    art[art_key] = val
+            list_item.setArt(art)
 
-        video_stream = stream_tags.get('video_stream', {})
-        audio_stream = stream_tags.get('audio_stream', {})
-        if video_stream:
-            list_item.addStreamInfo('video', video_stream)
-        if audio_stream:
-            list_item.addStreamInfo('audio', audio_stream)
-
-        prop_map = {
-            'video_tag': stream_tags.get('video_tag', ''),
-            'audio_tag': stream_tags.get('audio_tag', ''),
-            'VideoResolution': stream_tags.get('video_resolution', ''),
-            'VideoCodec': stream_tags.get('video_codec', ''),
-            'VideoSource': stream_tags.get('video_source', ''),
-            'VideoHDR': stream_tags.get('hdr', ''),
-            'HdrType': stream_tags.get('hdr_type', ''),
-            'AudioCodec': stream_tags.get('audio_codec', ''),
-            'AudioChannels': stream_tags.get('audio_channels', ''),
-            'AudioLanguage': stream_tags.get('audio_language', ''),
-            'AudioProfile': stream_tags.get('audio_profile', ''),
-            'AudioObject': stream_tags.get('audio_object', ''),
-            'AudioAtmos': stream_tags.get('audio_object', ''),
-            'AudioCodec2': stream_tags.get('audio_object', ''),
-            'AudioCodecAlt': stream_tags.get('audio_object', ''),
-            'AudioCodecExtra': stream_tags.get('audio_profile', ''),
-            'AudioCodecCombined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
-            'video_resolution': stream_tags.get('video_resolution', ''),
-            'video_codec': stream_tags.get('video_codec', ''),
-            'video_source': stream_tags.get('video_source', ''),
-            'video_hdr': stream_tags.get('hdr', ''),
-            'hdr_type': stream_tags.get('hdr_type', ''),
-            'audio_codec': stream_tags.get('audio_codec', ''),
-            'audio_channels': stream_tags.get('audio_channels', ''),
-            'audio_language': stream_tags.get('audio_language', ''),
-            'audio_profile': stream_tags.get('audio_profile', ''),
-            'audio_object': stream_tags.get('audio_object', ''),
-            'audio_codec2': stream_tags.get('audio_object', ''),
-            'audio_codec_alt': stream_tags.get('audio_object', ''),
-            'audio_codec_extra': stream_tags.get('audio_profile', ''),
-            'audio_codec_combined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
-            'media.hdr': stream_tags.get('hdr', ''),
-            'media.source': stream_tags.get('video_source', ''),
-            'media.hdrtype': stream_tags.get('hdr_type', ''),
-            'media.audio': stream_tags.get('audio_codec', ''),
-            'media.audioprofile': stream_tags.get('audio_profile', ''),
-            'media.audioobject': stream_tags.get('audio_object', ''),
-            'media.audio2': stream_tags.get('audio_object', ''),
-            'media.audioextra': stream_tags.get('audio_profile', ''),
-            'VideoPlayer.VideoResolution': stream_tags.get('video_resolution', ''),
-            'VideoPlayer.VideoCodec': stream_tags.get('video_codec', ''),
-            'VideoPlayer.AudioCodec': stream_tags.get('audio_codec', ''),
-            'VideoPlayer.AudioChannels': stream_tags.get('audio_channels', ''),
-            'VideoPlayer.HDRType': stream_tags.get('hdr', ''),
-            'VideoPlayer.HdrType': stream_tags.get('hdr_type', ''),
-            'VideoPlayer.AudioProfile': stream_tags.get('audio_profile', ''),
-            'VideoPlayer.AudioObject': stream_tags.get('audio_object', ''),
-            'VideoPlayer.AudioCodec2': stream_tags.get('audio_object', ''),
-            'VideoPlayer.AudioCodecCombined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
-            'VideoPlayer.VideoAspect': '',
-            'VideoInfo.VideoResolution': stream_tags.get('video_resolution', ''),
-            'VideoInfo.VideoCodec': stream_tags.get('video_codec', ''),
-            'VideoInfo.AudioCodec': stream_tags.get('audio_codec', ''),
-            'VideoInfo.AudioChannels': stream_tags.get('audio_channels', ''),
-            'VideoInfo.HDRType': stream_tags.get('hdr', ''),
-            'VideoInfo.HdrType': stream_tags.get('hdr_type', ''),
-            'VideoInfo.AudioProfile': stream_tags.get('audio_profile', ''),
-            'VideoInfo.AudioObject': stream_tags.get('audio_object', ''),
-            'VideoInfo.AudioCodec2': stream_tags.get('audio_object', ''),
-            'VideoInfo.AudioCodecCombined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
-            'video.resolution': stream_tags.get('video_resolution', ''),
-            'video.codec': stream_tags.get('video_codec', ''),
-            'video.source': stream_tags.get('video_source', ''),
-            'video.hdr': stream_tags.get('hdr', ''),
-            'audio.codec': stream_tags.get('audio_codec', ''),
-            'audio.channels': stream_tags.get('audio_channels', ''),
-            'audio.language': stream_tags.get('audio_language', ''),
-            'audio.profile': stream_tags.get('audio_profile', ''),
-            'audio.object': stream_tags.get('audio_object', ''),
-            'audio.codec2': stream_tags.get('audio_object', ''),
-            'audio.codec_combined': stream_tags.get('audio_profile', '') or stream_tags.get('audio_codec', ''),
-            'media.resolution': stream_tags.get('video_resolution', ''),
-            'media.codec': stream_tags.get('video_codec', ''),
-            'media.channels': stream_tags.get('audio_channels', ''),
-        }
-        for prop_name, prop_value in prop_map.items():
-            if prop_value:
-                list_item.setProperty(prop_name, str(prop_value))
-
-        flag_props = {
-            'HasAtmos': 'true' if stream_tags.get('audio_object') == 'Atmos' else '',
-            'AudioIsAtmos': 'true' if stream_tags.get('audio_object') == 'Atmos' else '',
-            'HasDTSX': 'true' if stream_tags.get('audio_codec') == 'DTS:X' or stream_tags.get('audio_profile') == 'DTS:X' else '',
-            'AudioIsDTSX': 'true' if stream_tags.get('audio_codec') == 'DTS:X' or stream_tags.get('audio_profile') == 'DTS:X' else '',
-        }
-        for prop_name, prop_value in flag_props.items():
-            if prop_value:
-                list_item.setProperty(prop_name, prop_value)
+        apply_stream_props(list_item, stream_tags)
 
         list_item.setProperty('IsPlayable', 'true')
 
@@ -2992,6 +2879,192 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
 
     xbmcplugin.addDirectoryItems(addon_handle, list_items)
     xbmcplugin.endOfDirectory(addon_handle)
+
+
+# ---------------------------------------------------------------------------
+# TMDB HELPER CONTEXT — đọc metadata TMDb Helper đã fetch sẵn từ Window(Home)
+# Service Monitor populate TMDbHelper.ListItem.* ngay khi user focus/bấm play.
+# Addon đọc thẳng từ đây thay vì gọi thêm API — nhanh hơn, đúng ngôn ngữ hơn.
+# ---------------------------------------------------------------------------
+
+def read_tmdbhelper_context(tmdb_id=None, wait_ms=800):
+    """
+    Đọc metadata TMDb Helper Service Monitor đang giữ trong Window(Home).
+    Chỉ dùng khi được gọi từ TMDb Helper (có tmdb_id từ params).
+
+    Đợi tối đa wait_ms ms nếu Service Monitor đang update.
+    Trả về dict với plot/poster/fanart/rating/title — rỗng nếu không có gì.
+    """
+    win = xbmcgui.Window(10000)
+
+    # Đợi Service Monitor xong nếu đang busy (tối đa wait_ms)
+    steps = wait_ms // 100
+    for _ in range(steps):
+        if not win.getProperty('TMDbHelper.IsUpdating'):
+            break
+        xbmc.sleep(100)
+
+    # Map các property TMDb Helper Service Monitor → key nội bộ
+    # Tham khảo: wiki/Detailed-Item — prefix TMDbHelper.ListItem.*
+    prop_map = {
+        'plot':       'TMDbHelper.ListItem.Plot',
+        'title':      'TMDbHelper.ListItem.Title',
+        'rating':     'TMDbHelper.ListItem.Rating',
+        'votes':      'TMDbHelper.ListItem.Votes',
+        'poster':     'TMDbHelper.ListItem.thumb',
+        'fanart':     'TMDbHelper.ListItem.fanart',
+        'clearlogo':  'TMDbHelper.ListItem.clearlogo',
+        'clearart':   'TMDbHelper.ListItem.clearart',
+        'landscape':  'TMDbHelper.ListItem.landscape',
+        'discart':    'TMDbHelper.ListItem.discart',
+        'banner':     'TMDbHelper.ListItem.banner',
+        'tmdb_id':    'TMDbHelper.ListItem.UniqueId.tmdb',
+        'imdb_id':    'TMDbHelper.ListItem.UniqueId.imdb',
+    }
+
+    ctx = {}
+    for key, prop in prop_map.items():
+        value = win.getProperty(prop) or ''
+        if value:
+            ctx[key] = value
+
+    # Validate tmdb_id khớp để tránh đọc nhầm context của item khác
+    if tmdb_id and ctx.get('tmdb_id'):
+        if str(ctx['tmdb_id']) != str(tmdb_id):
+            xbmc.log(
+                f"read_tmdbhelper_context: tmdb_id mismatch "
+                f"expected={tmdb_id} got={ctx.get('tmdb_id')} — discarding",
+                level=xbmc.LOGWARNING
+            )
+            return {}
+
+    if ctx:
+        xbmc.log(
+            f"read_tmdbhelper_context: got plot={bool(ctx.get('plot'))} "
+            f"poster={bool(ctx.get('poster'))} fanart={bool(ctx.get('fanart'))} "
+            f"tmdb_id={ctx.get('tmdb_id')}",
+            level=xbmc.LOGINFO
+        )
+    else:
+        xbmc.log("read_tmdbhelper_context: no properties found in Window(Home)", level=xbmc.LOGINFO)
+
+    return ctx
+
+
+# save_tmdbhelper_context / load_tmdbhelper_context / clear_tmdbhelper_context
+# đã bị xóa — Kodi Way: metadata sống trong ListItem, không cần truyền qua URL.
+
+
+# ---------------------------------------------------------------------------
+# PLAY VIA TMDB HELPER — dùng cho list cộng đồng / manual search
+# Lưu fshare_url vào Window property, redirect sang TMDb Helper để lấy
+# metadata tiếng Việt đầy đủ. TMDb Helper gọi ngược action=search_fshare
+# và addon dùng pending_url để skip search, play thẳng.
+# ---------------------------------------------------------------------------
+FSHARE_PENDING_KEY = 'myimdbfshare.pending.{tmdb_id}'
+
+def play_via_tmdb_helper(fshare_url, tmdb_id, imdb_id='', title='', year='',
+                          season=None, episode=None, tvshowtitle=None):
+    """
+    Redirect sang TMDb Helper để lấy metadata VN đầy đủ.
+    Lưu fshare_url vào Window(10000) với key theo tmdb_id để tránh race condition.
+    Nếu không có tmdb_id, fallback play trực tiếp.
+    """
+    if not tmdb_id:
+        xbmc.log("play_via_tmdb_helper: no tmdb_id, fallback to play_fshare_direct", level=xbmc.LOGINFO)
+        play_fshare_direct(
+            fshare_url  = fshare_url,
+            imdb_id     = imdb_id,
+            tmdb_id     = '',
+            title       = title,
+            year        = year,
+            season      = season,
+            episode     = episode,
+            tvshowtitle = tvshowtitle,
+        )
+        return
+
+    tmdb_type = 'tv' if (season and episode) else 'movie'
+    params = {'info': 'play', 'tmdb_id': str(tmdb_id), 'tmdb_type': tmdb_type}
+    if season:
+        params['season']  = str(season)
+    if episode:
+        params['episode'] = str(episode)
+
+    tmdb_url = 'plugin://plugin.video.themoviedb.helper/?' + urllib.parse.urlencode(params)
+    xbmc.log(f"play_via_tmdb_helper: launching {tmdb_url}", level=xbmc.LOGINFO)
+    xbmc.executebuiltin(f'RunPlugin({tmdb_url})')
+
+
+def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
+                       season=None, episode=None, tvshowtitle=None):
+    """
+    Resolve fshare URL → CDN link → setResolvedUrl.
+    Kodi Way: Kodi giữ nguyên ListItem đã build đầy đủ metadata từ show_fshare_links /
+    browse_fshare_folder. Hàm này chỉ cần trả về CDN url và set Trakt IDs.
+    """
+    handle = int(sys.argv[1])
+
+    # Extract fshare URL thuần nếu vẫn còn dạng plugin://
+    if fshare_url.startswith('plugin://'):
+        decoded = urllib.parse.unquote_plus(fshare_url)
+        match = re.search(r'url=(https?://(?:www\.)?fshare\.vn/[^\s&\[\]]+)', decoded)
+        if match:
+            fshare_url = urllib.parse.unquote(match.group(1))
+        else:
+            notify('Không tìm được fshare URL')
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
+
+    if not fshare_url or 'fshare.vn' not in fshare_url:
+        notify('URL Fshare không hợp lệ')
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+
+    cdn_url = fshare_get_download_link(fshare_url)
+    if not cdn_url:
+        notify('Không lấy được CDN link từ Fshare')
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
+
+    xbmc.log(f"play_fshare_direct: resolved {fshare_url[:60]} → CDN OK", level=xbmc.LOGINFO)
+
+    # Fetch metadata & ID khi play nếu chưa có.
+    # Hoạt động độc lập với setting "metadata khi duyệt" — kể cả khi duyệt tắt (metadata_source=none)
+    # vẫn tra để Trakt scrobble và skin hiện đúng thông tin.
+    if get_fetch_ids_on_play() and not imdb_id and not tmdb_id and title:
+        try:
+            # force_source: ưu tiên dùng tmdb nếu có key, fallback omdb, không bao giờ 'none'
+            actual_source = get_metadata_source()
+            force_source = actual_source if actual_source != 'none' else 'tmdb'
+            meta = lookup_tmdb_metadata(
+                title        = title if not (season and episode) else '',
+                year         = year,
+                tvshowtitle  = tvshowtitle if (season and episode) else '',
+                season       = season,
+                episode      = episode,
+                force_source = force_source,
+            )
+            if meta:
+                imdb_id = imdb_id or meta.get('imdb_id', '')
+                tmdb_id = tmdb_id or meta.get('tmdb_id', '')
+                xbmc.log(f"play_fshare_direct: fetched imdb={imdb_id} tmdb={tmdb_id}", level=xbmc.LOGINFO)
+        except Exception as e:
+            xbmc.log(f"play_fshare_direct: ID fetch error: {e}", level=xbmc.LOGWARNING)
+
+    # Set script.trakt.ids vào Window(10000) cho Trakt scrobble
+    if imdb_id or tmdb_id:
+        trakt_ids = {}
+        if imdb_id: trakt_ids['imdb'] = str(imdb_id)
+        if tmdb_id: trakt_ids['tmdb'] = str(tmdb_id)
+        xbmcgui.Window(10000).setProperty('script.trakt.ids', json.dumps(trakt_ids))
+        xbmc.log(f"play_fshare_direct: set script.trakt.ids={json.dumps(trakt_ids)}", level=xbmc.LOGINFO)
+
+    # ListItem tối giản — Kodi merge metadata từ ListItem gốc đã build đầy đủ
+    list_item = xbmcgui.ListItem(path=cdn_url)
+    list_item.setProperty('IsPlayable', 'true')
+
+    xbmcplugin.setResolvedUrl(handle, True, listitem=list_item)
 
 
 def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year, season=None, episode=None, tvshowtitle=None):
@@ -3073,6 +3146,89 @@ def router(paramstring):
         elif action == 'set_tmdb_api_key':
             prompt_text_setting('tmdb_api_key', 'Nhập TMDb API Key', get_local_setting('tmdb_api_key', ''))
 
+        elif action == 'set_fshare_credentials':
+            username, password = fshare_prompt_credentials()
+            if username:
+                xbmcgui.Dialog().notification('Fshare', f'Đã lưu: {username}', time=3000)
+            settings_menu()
+
+        elif action == 'fshare_relogin':
+            fshare_relogin()
+            settings_menu()
+
+        elif action == 'debug_tmdbhelper_props':
+            # Dump toàn bộ TMDbHelper.* properties trong Window(Home) ra log
+            win = xbmcgui.Window(10000)
+            # Các prefix cần kiểm tra
+            prefixes = [
+                'TMDbHelper.ListItem.',
+                'TMDbHelper.Player.',
+                'TMDbHelper.IsUpdating',
+                'TMDbHelper.Service',
+            ]
+            # Danh sách property name đã biết từ wiki
+            known_props = [
+                'TMDbHelper.IsUpdating',
+                'TMDbHelper.ListItem.Plot',
+                'TMDbHelper.ListItem.Title',
+                'TMDbHelper.ListItem.Rating',
+                'TMDbHelper.ListItem.Votes',
+                'TMDbHelper.ListItem.thumb',
+                'TMDbHelper.ListItem.fanart',
+                'TMDbHelper.ListItem.poster',
+                'TMDbHelper.ListItem.clearlogo',
+                'TMDbHelper.ListItem.clearart',
+                'TMDbHelper.ListItem.landscape',
+                'TMDbHelper.ListItem.discart',
+                'TMDbHelper.ListItem.banner',
+                'TMDbHelper.ListItem.UniqueId.tmdb',
+                'TMDbHelper.ListItem.UniqueId.imdb',
+                'TMDbHelper.ListItem.UniqueId.tvdb',
+                'TMDbHelper.ListItem.Year',
+                'TMDbHelper.ListItem.Genre',
+                'TMDbHelper.ListItem.Studio',
+                'TMDbHelper.ListItem.Premiered',
+                'TMDbHelper.ListItem.MPAA',
+                'TMDbHelper.ListItem.Director',
+                'TMDbHelper.ListItem.Duration',
+                'TMDbHelper.ListItem.Tagline',
+                'TMDbHelper.ListItem.Status',
+                'TMDbHelper.ListItem.TVShowTitle',
+                'TMDbHelper.ListItem.Season',
+                'TMDbHelper.ListItem.Episode',
+                'TMDbHelper.Player.Plot',
+                'TMDbHelper.Player.Title',
+                'TMDbHelper.Player.thumb',
+                'TMDbHelper.Player.fanart',
+                'TMDbHelper.Player.UniqueId.tmdb',
+                'TMDbHelper.Player.UniqueId.imdb',
+                'TMDbHelper.Player.Rating',
+            ]
+            found = []
+            empty = []
+            for prop in known_props:
+                val = win.getProperty(prop) or ''
+                if val:
+                    # Cắt ngắn URL dài
+                    display = val[:120] + '...' if len(val) > 120 else val
+                    found.append(f"  [SET]   {prop} = {display}")
+                else:
+                    empty.append(f"  [EMPTY] {prop}")
+
+            xbmc.log("=" * 70, level=xbmc.LOGINFO)
+            xbmc.log("DEBUG: TMDbHelper Window(Home) Properties Dump", level=xbmc.LOGINFO)
+            xbmc.log(f"  Found {len(found)} non-empty / {len(empty)} empty properties", level=xbmc.LOGINFO)
+            xbmc.log("--- NON-EMPTY ---", level=xbmc.LOGINFO)
+            for line in found:
+                xbmc.log(line, level=xbmc.LOGINFO)
+            xbmc.log("--- EMPTY ---", level=xbmc.LOGINFO)
+            for line in empty:
+                xbmc.log(line, level=xbmc.LOGINFO)
+            xbmc.log("=" * 70, level=xbmc.LOGINFO)
+
+            summary = f"{len(found)} props có giá trị / {len(empty)} rỗng. Xem kodi.log để biết chi tiết."
+            xbmcgui.Dialog().ok('Debug TMDbHelper Props', summary)
+
         elif action == 'choose_strm_dir':
             choose_strm_directory()
 
@@ -3136,6 +3292,12 @@ def router(paramstring):
             movie_year = params.get('year')
             imdb_id = params.get('imdb')
             tmdb_id = params.get('tmdb')
+            xbmc.log(
+                f"[search_fshare] title={movie_title!r} year={movie_year!r} "
+                f"imdb={imdb_id!r} tmdb={tmdb_id!r} "
+                f"season={params.get('season')!r} episode={params.get('episode')!r}",
+                level=xbmc.LOGINFO
+            )
 
             # Các tham số dành riêng cho TV Show
             season = params.get('season')
@@ -3229,6 +3391,33 @@ def router(paramstring):
                 episode=params.get('episode') or None,
                 tvshowtitle=params.get('tvshowtitle') or None,
             )
+
+        elif action == 'play_fshare_direct':
+            play_fshare_direct(
+                fshare_url  = urllib.parse.unquote_plus(params.get('url', '')),
+                imdb_id     = params.get('imdb', ''),
+                tmdb_id     = params.get('tmdb', ''),
+                title       = params.get('title', ''),
+                year        = params.get('year', ''),
+                season      = params.get('season') or None,
+                episode     = params.get('episode') or None,
+                tvshowtitle = params.get('tvshowtitle') or None,
+            )
+
+        elif action == 'play_via_tmdb_helper':
+            fshare_url = params.get('url', '')
+            if fshare_url:
+                play_via_tmdb_helper(
+                    fshare_url  = fshare_url,
+                    tmdb_id     = params.get('tmdb', ''),
+                    imdb_id     = params.get('imdb', ''),
+                    title       = params.get('title', ''),
+                    year        = params.get('year', ''),
+                    season      = params.get('season') or None,
+                    episode     = params.get('episode') or None,
+                    tvshowtitle = params.get('tvshowtitle') or None,
+                )
+
     else:
         # Nếu không có tham số, hiển thị menu gốc
         main_menu()
