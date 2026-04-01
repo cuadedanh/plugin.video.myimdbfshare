@@ -1,0 +1,10 @@
+{
+  "name": "Fshare 4K_ATMOS->4K->1080p->DTS",
+  "plugin": "plugin.video.myimdbfshare",
+  "priority": 1,
+  "is_resolvable": "true",
+  "play_movie": "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare&title={originaltitle_url}&year={year}&imdb={imdb}&tmdb={tmdb}&include=2160p;atmos~~2160p~~1080p~~dts&exclude=iso|truehd",
+  "play_episode": "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare&title={showname_url}&year={year}&imdb={imdb}&tmdb={tmdb}&season={season}&episode={episode}&include=2160p|1080p|atmos|dts&exclude=iso",
+  "search_movie": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}&include=2160p;atmos&exclude=iso",
+  "search_episode": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}&tvshowtitle={originaltitle}&season={season}&episode={episode}&include=atmos~~2160p~~1080p&exclude=iso"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Fshare ALL",
+  "plugin": "plugin.video.myimdbfshare",
+  "priority": 10000,
+  "is_resolvable": "true",
+  "search_movie": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={title}&year={year}&imdb={imdb}&tmdb={tmdb}",
+  "search_episode": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={tvshowtitle}&year={year}&imdb={imdb}&tmdb={tmdb}&tvshowtitle={tvshowtitle}&season={season}&episode={episode}"
+}

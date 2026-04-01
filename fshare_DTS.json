@@ -1,0 +1,8 @@
+{
+  "name": "Fshare DTS",
+  "plugin": "plugin.video.myimdbfshare",
+  "priority": 50,
+  "is_resolvable": "false",
+  "search_movie": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}&include=dts&exclude=iso",
+  "search_episode": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}&tvshowtitle={originaltitle}&season={season}&episode={episode}&include=dts&exclude=iso"
+}

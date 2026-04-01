@@ -1,0 +1,8 @@
+{
+  "name": "Fshare all no ISO",
+  "plugin": "plugin.video.myimdbfshare",
+  "priority": 50,
+  "is_resolvable": "true",
+  "search_movie": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}&exclude=iso",
+  "search_episode": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={originaltitle}&year={year}&tvshowtitle={originaltitle}&season={season}&episode={episode}&exclude=iso"
+}
