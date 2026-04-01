@@ -809,6 +809,16 @@ def apply_stream_props(list_item, stream_tags):
     if audio_stream:
         list_item.addStreamInfo('audio', audio_stream)
 
+    # --- Set HdrType vào VideoInfoTag ---
+    # ListItem.HdrType / VideoPlayer.HdrType (dùng trong Image_HDR_Codec, Image_OSD_HDR_Codec)
+    # chỉ đọc từ VideoInfoTag.setHdrType() — setProperty() KHÔNG hoạt động cho các infolabel đó.
+    hdr_type = stream_tags.get('hdr_type', '')
+    if hdr_type:
+        try:
+            list_item.getVideoInfoTag().setHdrType(hdr_type)
+        except Exception:
+            pass  # Kodi build cũ không có setHdrType — fallback về setProperty bên dưới
+
     st = stream_tags
     prop_map = {
         'video_tag':                    st.get('video_tag', ''),
@@ -884,6 +894,7 @@ def apply_stream_props(list_item, stream_tags):
         'video.hdrtype':                st.get('hdr_type', ''),
         'audio_codec_combined':         st.get('audio_profile', '') or st.get('audio_codec', ''),
         'HasAtmos':    'true' if st.get('audio_object', '').lower() == 'atmos' else '',
+        'IsAtmos': 'true' if st.get('audio_object', '').lower() == 'atmos' else '',
         'AudioIsAtmos':'true' if st.get('audio_object', '').lower() == 'atmos' else '',
         'HasDTSX':     'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
         'AudioIsDTSX': 'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
@@ -971,7 +982,7 @@ def parse_stream_tags_from_filename(filename):
     hdr_matches = []
     hdr_patterns = [
         (r'HDR10\+', 'HDR10+'),
-        (r'DOLBY[.\- ]?VISION|DO?VI| DV ', 'DV'),
+        (r'DOLBY[.\- ]?VISION|DO?VI|(?<![A-Z])DV(?![A-Z0-9])', 'DV'),
         (r'HDR10', 'HDR10'),
         (r'(?<!SDR)HDR(?!IP)', 'HDR'),
     ]
@@ -2211,6 +2222,7 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 'season':      effective_season,
                 'episode':     effective_episode,
                 'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+                'filename':    name,
             }
             play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
             list_items.append((play_url, list_item, False))
@@ -2539,6 +2551,7 @@ def list_community(page=1):
                     'season':      effective_season,
                     'episode':     effective_episode,
                     'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+                    'filename':    real_name if real_name and is_video_file else name,
                 }
                 play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
                 list_items.append((play_url, list_item, False))
@@ -2580,11 +2593,11 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
     """
     Lọc kết quả tìm kiếm Fshare bằng keyword match trên tên file.
 
-    include : chuỗi các nhóm AND ngăn cách bằng ';', trong mỗi nhóm dùng '|' cho OR.
-              Ví dụ: '2160p|4k|uhd;atmos|ddp;mkv|iso'
+    include : chuỗi các nhóm AND ngăn cách bằng ';', trong mỗi nhóm dùng ',' cho OR.
+              Ví dụ: '2160p,4k,uhd;atmos,ddp;mkv,iso'
               -> (2160p OR 4k OR uhd) AND (atmos OR ddp) AND (mkv OR iso)
-    exclude : chuỗi keyword ngăn cách bằng '|', bất kỳ keyword nào match thì loại.
-              Ví dụ: 'hdcam|cam|telesync'
+    exclude : chuỗi keyword ngăn cách bằng ',', bất kỳ keyword nào match thì loại.
+              Ví dụ: 'hdcam,cam,telesync'
 
     Match theo token (tách tên file theo . - _ space) để tránh false positive.
     Fallback: nếu không có kết quả -> bỏ dần nhóm include từ cuối -> hiện tất cả.
@@ -2617,10 +2630,10 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
 
     # ------------------------------------------------------------------ #
     #  INCLUDE / EXCLUDE FILTER                                           #
-    #  include='2160p|4k|uhd;atmos|ddp;mkv|iso'                          #
-    #    ';' phan cach nhom AND, '|' phan cach gia tri OR trong nhom      #
-    #  exclude='hdcam|cam|telesync'                                       #
-    #    '|' phan cach keyword, bat ky keyword nao match thi loai         #
+    #  include='2160p,4k,uhd;atmos,ddp;mkv,iso'                          #
+    #    ';' phan cach nhom AND, ',' phan cach gia tri OR trong nhom      #
+    #  exclude='hdcam,cam,telesync'                                       #
+    #    ',' phan cach keyword, bat ky keyword nao match thi loai         #
     #  Match theo token de tranh false positive (ts != TrueHD)            #
     #  Fallback: bo dan tung nhom include tu cuoi -> hien tat ca          #
     # ------------------------------------------------------------------ #
@@ -2647,7 +2660,9 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
         return False
 
     def _parse_include_groups(include_param):
-        """Phan tich include='A|B;C|D' thanh [['a','b'], ['c','d']]."""
+        """Phan tich include='A,B;C,D' thanh [['a','b'], ['c','d']].
+        ';' phan cach nhom AND, ',' phan cach OR trong nhom.
+        """
         if not include_param:
             return []
         groups = []
@@ -2655,16 +2670,16 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
             group_str = group_str.strip()
             if not group_str:
                 continue
-            keywords = [k.strip().lower() for k in group_str.split('|') if k.strip()]
+            keywords = [k.strip().lower() for k in group_str.split(',') if k.strip()]
             if keywords:
                 groups.append(keywords)
         return groups
 
     def _parse_exclude_list(exclude_param):
-        """Phan tich exclude='A|B|C' thanh ['a','b','c']."""
+        """Phan tich exclude='A,B,C' thanh ['a','b','c']."""
         if not exclude_param:
             return []
-        return [k.strip().lower() for k in str(exclude_param).split('|') if k.strip()]
+        return [k.strip().lower() for k in str(exclude_param).split(',') if k.strip()]
 
     def _item_matches(link_info, include_groups_check):
         """
@@ -2723,7 +2738,24 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
         effective_episode = str(episode or identity_tags.get('episode') or '')
         is_episode_item = bool(effective_season and effective_episode)
         effective_tvshowtitle = tvshowtitle or identity_tags.get('tvshowtitle') or movie_title or identity_tags.get('title', '')
-        effective_title = movie_title or identity_tags.get('display_title') or identity_tags.get('title') or link_info.get('title', '')
+        # Khi search manual (không có imdb_id/tmdb_id), movie_title là query string
+        # người dùng nhập — không nên dùng làm title cho từng file.
+        # Ưu tiên: identity_tags từ tên file > movie_title (query) > tên file thô.
+        is_manual_search = not (imdb_id or tmdb_id)
+        if is_manual_search:
+            effective_title = (
+                identity_tags.get('display_title')
+                or identity_tags.get('title')
+                or movie_title
+                or link_info.get('title', '')
+            )
+        else:
+            effective_title = (
+                movie_title
+                or identity_tags.get('display_title')
+                or identity_tags.get('title')
+                or link_info.get('title', '')
+            )
         effective_year = str(movie_year or identity_tags.get('year') or '')
         if is_episode_item:
             effective_title = f"{effective_tvshowtitle} S{effective_season.zfill(2)}E{effective_episode.zfill(2)}"
@@ -2823,6 +2855,7 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
             'season':      effective_season,
             'episode':     effective_episode,
             'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+            'filename':    link_info.get('title', ''),
         }
         play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
 
@@ -3061,7 +3094,7 @@ def play_via_tmdb_helper(fshare_url, tmdb_id, imdb_id='', title='', year='',
 
 
 def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
-                       season=None, episode=None, tvshowtitle=None):
+                       season=None, episode=None, tvshowtitle=None, filename=''):
     """
     Resolve fshare URL → CDN link → setResolvedUrl.
 
@@ -3155,6 +3188,26 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
     is_episode = bool(season and episode)
     list_item = xbmcgui.ListItem(label=title or '', path=cdn_url)
     list_item.setProperty('IsPlayable', 'true')
+
+    # ------------------------------------------------------------------ #
+    # Tên file gốc để skin check FileNameAndPath (atmos/dtsx/bluray/4K...)
+    # CDN URL không chứa tên file → ghép filename vào cuối CDN path (bỏ query string).
+    # Skin AH2 dùng String.Contains(ListItem.FileNameAndPath,...) và
+    # String.Contains(Player.FileNameAndPath,...) trong Image_AudioCodec,
+    # Image_RipSource, Image_OSD_AudioCodec, Image_OSD_RipSource.
+    # ------------------------------------------------------------------ #
+    _filename = (filename or os.path.basename((fshare_url or '').split('?')[0])).strip()
+    if _filename:
+        cdn_base = cdn_url.split('?')[0].rstrip('/')
+        fake_path = cdn_base + '/' + _filename
+        list_item.setPath(fake_path)
+
+    # Parse và apply stream tags (audio codec, video codec, HDR, channels...)
+    # apply_stream_props cũng gọi setHdrType() vào VideoInfoTag để
+    # Image_HDR_Codec / Image_OSD_HDR_Codec hoạt động đúng.
+    if _filename:
+        stream_tags = parse_stream_tags_from_filename(_filename)
+        apply_stream_props(list_item, stream_tags)
 
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(title or '')
@@ -3295,14 +3348,16 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         return kw and (kw in tokens or kw in full_name)
 
     def _parse_include_groups(tier_str):
-        """Parse một tier thành list of OR-groups: 'A|B;C|D' → [['a','b'],['c','d']]"""
+        """Parse một tier thành list of OR-groups: 'A,B;C,D' → [['a','b'],['c','d']]
+        ';' phân cách nhóm AND, ',' phân cách OR trong nhóm.
+        """
         if not tier_str:
             return []
         groups = []
         for g in str(tier_str).split(';'):
             g = g.strip()
             if g:
-                kws = [k.strip().lower() for k in g.split('|') if k.strip()]
+                kws = [k.strip().lower() for k in g.split(',') if k.strip()]
                 if kws:
                     groups.append(kws)
         return groups
@@ -3310,12 +3365,13 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     def _parse_include_tiers(param):
         """
         Parse chuỗi include có nhiều tầng ưu tiên, phân cách bằng '~~'.
-        Ví dụ: '2160p|4k;atmos~~1080p;dts~~720p'
+        Ví dụ: '2160p,4k;atmos~~1080p;dts~~720p'
           → tier 1: [['2160p','4k'],['atmos']]
           → tier 2: [['1080p'],['dts']]
           → tier 3: [['720p']]
         Tương thích ngược: nếu không có '~~', coi như 1 tier duy nhất.
         Dùng '~~' thay vì '||' vì '||' bị shell interpret khi TMDb Helper build URL.
+        Dùng ',' thay vì '|' cho OR vì '|' bị Kodi cắt trong URL params.
         """
         if not param:
             return []
@@ -3329,9 +3385,10 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         return tiers
 
     def _parse_exclude_list(param):
+        """Phan tich exclude='A,B,C' thanh ['a','b','c']."""
         if not param:
             return []
-        return [k.strip().lower() for k in str(param).split('|') if k.strip()]
+        return [k.strip().lower() for k in str(param).split(',') if k.strip()]
 
     include_tiers = _parse_include_tiers(include)
     exclude_list  = _parse_exclude_list(exclude)
@@ -3415,10 +3472,16 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     )
 
     if get_autoplay_notify():
-        tier_info = ''
-        if matched_tier > 0:
-            tier_info = f' · tier {matched_tier}'
-        body = f'{best_size_gb:.2f} GB{tier_info} · {len(links)} ứng viên'
+        # Hiện đầy đủ: size · tier N: include · excl: exclude · N ứng viên
+        parts = [f'{best_size_gb:.2f} GB']
+        if include_tiers:
+            tier_label = f'T{matched_tier}: ' if matched_tier > 0 else ''
+            tiers_str = '~~'.join(';'.join(','.join(g) for g in t) for t in include_tiers)
+            parts.append(f'{tier_label}{tiers_str}')
+        if exclude_list:
+            parts.append(f'excl: {",".join(exclude_list)}')
+        parts.append(f'{len(links)} ứng viên')
+        body = ' · '.join(parts)
         xbmcgui.Dialog().notification(
             best_title,
             body,
@@ -3916,6 +3979,7 @@ def router(paramstring):
                 season      = params.get('season') or None,
                 episode     = params.get('episode') or None,
                 tvshowtitle = params.get('tvshowtitle') or None,
+                filename    = params.get('filename', ''),
             )
 
         elif action == 'play_via_tmdb_helper':
