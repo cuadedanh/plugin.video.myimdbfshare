@@ -156,6 +156,21 @@ def get_show_lookup_debug_ids():
     return str(value).lower() == 'true'
 
 
+def get_autoplay_notify():
+    value = get_local_setting('autoplay_notify', True)
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() != 'false'
+
+
+def get_autoplay_notify_duration():
+    try:
+        value = int(get_local_setting('autoplay_notify_duration', 5000) or 5000)
+        return max(1000, value)
+    except Exception:
+        return 5000
+
+
 def get_metadata_source():
     """Tra ve nguon metadata: 'none', 'tmdb', 'omdb'. Mac dinh 'tmdb'."""
     value = get_local_setting('metadata_source', 'tmdb')
@@ -409,6 +424,30 @@ def settings_menu():
             'Hiện IMDb ID và TMDb ID ngay trên tên mỗi link trong danh sách.\n'
             'Dùng để kiểm tra addon đã nhận đúng ID chưa trước khi play.\n'
             'Tắt khi không cần — danh sách trông gọn hơn.'
+        )
+    )
+
+    # =========================================================
+    # NHÓM 8 — AUTO PLAY
+    # =========================================================
+    autoplay_notify_state = 'Bật' if get_autoplay_notify() else 'Tắt'
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_autoplay_notify'}),
+        _make_setting_item(
+            f'[Thông báo file được chọn khi auto play: {autoplay_notify_state}]',
+            'Hiện thông báo tên file và dung lượng ngay sau khi auto_play_fshare chọn link.\n'
+            'Tiêu đề: tên file đầy đủ. Nội dung: dung lượng + tier filter đã khớp.\n'
+            'Bật để xác nhận addon đang play đúng file mong muốn.\n'
+            'Tắt nếu không cần thông báo — play thẳng không gián đoạn.'
+        )
+    )
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_autoplay_notify_duration'}),
+        _make_setting_item(
+            f'[Thời gian hiện thông báo auto play: {get_autoplay_notify_duration() // 1000}s]',
+            'Số giây hiển thị thông báo tên file khi auto play.\n'
+            'Nhập theo mili giây (1000 = 1 giây). Tối thiểu 1000ms.\n'
+            'Mặc định: 5000ms (5 giây) — đủ để đọc tên file dài.'
         )
     )
 
@@ -3296,6 +3335,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
 
     include_tiers = _parse_include_tiers(include)
     exclude_list  = _parse_exclude_list(exclude)
+    matched_tier  = 0  # 0 = không có filter, >0 = tier đã khớp
 
     def _is_excluded(link_info):
         fname  = link_info.get('title', '')
@@ -3365,12 +3405,25 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     links.sort(key=lambda x: x.get('size', 0), reverse=True)
     best = links[0]
 
+    best_title = best.get('title', '')
+    best_size_gb = best.get('size', 0) / (1024 ** 3)
     xbmc.log(
-        f"auto_play_fshare: selected '{best.get('title', '')}' "
-        f"({best.get('size', 0) / (1024**3):.2f} GB) "
+        f"auto_play_fshare: selected '{best_title}' "
+        f"({best_size_gb:.2f} GB) "
         f"from {len(links)} candidate(s)",
         level=xbmc.LOGINFO
     )
+
+    if get_autoplay_notify():
+        tier_info = ''
+        if matched_tier > 0:
+            tier_info = f' · tier {matched_tier}'
+        body = f'{best_size_gb:.2f} GB{tier_info} · {len(links)} ứng viên'
+        xbmcgui.Dialog().notification(
+            best_title,
+            body,
+            time=get_autoplay_notify_duration()
+        )
 
     # ------------------------------------------------------------------ #
     # 4. Đọc metadata từ TMDb Helper Window context
@@ -3670,6 +3723,14 @@ def router(paramstring):
 
         elif action == 'toggle_fetch_ids_on_play':
             toggle_bool_setting('fetch_ids_on_play', 'Tra IMDb/TMDb ID khi play')
+            settings_menu()
+
+        elif action == 'toggle_autoplay_notify':
+            toggle_bool_setting('autoplay_notify', 'Thông báo file auto play')
+            settings_menu()
+
+        elif action == 'set_autoplay_notify_duration':
+            prompt_number_setting('autoplay_notify_duration', 'Nhập thời gian thông báo auto play (mili giây)', get_autoplay_notify_duration())
             settings_menu()
 
         elif action == 'set_items_per_page':
