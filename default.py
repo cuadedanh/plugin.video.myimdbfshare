@@ -825,6 +825,7 @@ def apply_stream_props(list_item, stream_tags):
         'audio_tag':                    st.get('audio_tag', ''),
         'VideoResolution':              st.get('video_resolution', ''),
         'VideoCodec':                   st.get('video_codec', ''),
+        'VideoAspect':                  st.get('video_aspect_label', ''),
         'VideoSource':                  st.get('video_source', ''),
         'VideoHDR':                     st.get('hdr', ''),
         'HdrType':                      st.get('hdr_type', ''),
@@ -846,11 +847,13 @@ def apply_stream_props(list_item, stream_tags):
         'VideoPlayer.AudioCodecCombined': st.get('audio_profile', '') or st.get('audio_codec', ''),
         'VideoPlayer.VideoResolution':  st.get('video_resolution', ''),
         'VideoPlayer.VideoCodec':       st.get('video_codec', ''),
+        'VideoPlayer.VideoAspect':      st.get('video_aspect_label', ''),
         'VideoPlayer.VideoSource':      st.get('video_source', ''),
         'VideoPlayer.HdrType':          st.get('hdr_type', ''),
         'VideoPlayer.HDRType':          st.get('hdr', ''),
         'VideoInfo.VideoResolution':    st.get('video_resolution', ''),
         'VideoInfo.VideoCodec':         st.get('video_codec', ''),
+        'VideoInfo.VideoAspect':        st.get('video_aspect_label', ''),
         'VideoInfo.VideoSource':        st.get('video_source', ''),
         'VideoInfo.AudioCodec':         st.get('audio_codec', ''),
         'VideoInfo.AudioChannels':      st.get('audio_channels', ''),
@@ -863,6 +866,7 @@ def apply_stream_props(list_item, stream_tags):
         'VideoInfo.HdrType':            st.get('hdr_type', ''),
         'media.videoresolution':        st.get('video_resolution', ''),
         'media.videocodec':             st.get('video_codec', ''),
+        'media.videoaspect':            st.get('video_aspect_label', ''),
         'media.videosource':            st.get('video_source', ''),
         'media.hdr':                    st.get('hdr', ''),
         'media.hdrtype':                st.get('hdr_type', ''),
@@ -889,6 +893,7 @@ def apply_stream_props(list_item, stream_tags):
         'audio.codec_combined':         st.get('audio_profile', '') or st.get('audio_codec', ''),
         'video.codec':                  st.get('video_codec', ''),
         'video.resolution':             st.get('video_resolution', ''),
+        'video.aspect':                 st.get('video_aspect_label', ''),
         'video.source':                 st.get('video_source', ''),
         'video.hdr':                    st.get('hdr', ''),
         'video.hdrtype':                st.get('hdr_type', ''),
@@ -899,6 +904,12 @@ def apply_stream_props(list_item, stream_tags):
         'HasDTSX':     'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
         'AudioIsDTSX': 'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
     }
+    for idx, lang_code in enumerate(st.get('audio_language_list', [])[:5], start=1):
+        if lang_code:
+            prop_map[f'AudioLanguage.{idx}'] = lang_code
+    for idx, lang_code in enumerate(st.get('subtitle_language_list', [])[:5], start=1):
+        if lang_code:
+            prop_map[f'SubtitleLanguage.{idx}'] = lang_code
     for prop_name, prop_value in prop_map.items():
         if prop_value:
             list_item.setProperty(prop_name, str(prop_value))
@@ -918,11 +929,13 @@ def parse_stream_tags_from_filename(filename):
     video_resolution = ''
     video_source = ''
     video_codec_label = ''
+    video_aspect_label = ''
     hdr_label = ''
     hdr_type = ''
     audio_codec_label = ''
     audio_channels_label = ''
     audio_language = []
+    subtitle_language = []
     audio_object = ''
     audio_profile = ''
 
@@ -979,10 +992,22 @@ def parse_stream_tags_from_filename(filename):
             video_stream['codec'] = codec
             break
 
+    aspect_patterns = [
+        (r'(?<!\d)(2[.\- ]?(?:39|40))(?:[: ]?1)?', ('2.39', 2.39)),
+        (r'(?<!\d)(1[.\- ]?85)(?:[: ]?1)?', ('1.85', 1.85)),
+        (r'(?<!\d)(1[.\- ]?78|16[:x ]9)(?:[: ]?1)?', ('1.78', 1.78)),
+        (r'(?<!\d)(1[.\- ]?33|4[:x ]3)(?:[: ]?1)?', ('1.33', 1.33)),
+    ]
+    for pattern, (label, aspect_value) in aspect_patterns:
+        if re.search(pattern, normalized):
+            video_aspect_label = label
+            video_stream['aspect'] = aspect_value
+            break
+
     hdr_matches = []
     hdr_patterns = [
         (r'HDR10\+', 'HDR10+'),
-        (r'DOLBY[.\- ]?VISION|DO?VI|(?<![A-Z])DV(?![A-Z0-9])', 'DV'),
+        (r'DOLBY[.\- ]?VISION|(?:^|[ \.\-_\[\(])DO?VI(?:$|[ \.\-_\]\)])|(?:^|[ \.\-_\[\(])DV(?:$|[ \.\-_\]\)])', 'DV'),
         (r'HDR10', 'HDR10'),
         (r'(?<!SDR)HDR(?!IP)', 'HDR'),
     ]
@@ -1088,23 +1113,28 @@ def parse_stream_tags_from_filename(filename):
             audio_profile = audio_object
 
     language_patterns = [
-        (r'VIETSUB|SUB[.\- ]?VIET', 'VieSub'),
-        (r'HARD[.\- ]?SUB|HARDSUB', 'VieSub'),
-        (r'THUYET[.\- ]?MINH|\bTM\b', 'TM'),
-        (r'USLT', 'USLT'),
-        (r'(?<![A-Z])VIE(?![A-Z])|VIET', 'ViE'),
-        (r'(?<![A-Z])ENG(?![A-Z])|ENGLISH', 'ENG'),
-        (r'\bMULTI\b', 'Multi'),
-        (r'\bDUAL\b', 'Dual'),
-        (r'\bAI\b', 'AI'),
+        (r'VIETSUB|SUB[.\- ]?VIET|HARD[.\- ]?SUB|HARDSUB', 'subtitle', 'vie'),
+        (r'SUB[.\- ]?ENG|ENG[.\- ]?SUB', 'subtitle', 'eng'),
+        (r'THUYET[.\- ]?MINH|\bTM\b', 'audio', 'vie'),
+        (r'(?<![A-Z])VIE(?![A-Z])|VIETNAMESE', 'audio', 'vie'),
+        (r'(?<![A-Z])ENG(?![A-Z])|ENGLISH', 'audio', 'eng'),
+        (r'(?<![A-Z])JPN(?![A-Z])|JAPANESE|(?<![A-Z])JAP(?![A-Z])', 'audio', 'jpn'),
+        (r'(?<![A-Z])KOR(?![A-Z])|KOREAN', 'audio', 'kor'),
+        (r'(?<![A-Z])THA(?![A-Z])|THAI', 'audio', 'tha'),
+        (r'(?<![A-Z])CHI(?![A-Z])|CHINESE|MANDARIN|CANTONESE', 'audio', 'chi'),
+        (r'\bMULTI\b', 'audio', 'unk'),
     ]
-    for pattern, label in language_patterns:
+    for pattern, language_type, label in language_patterns:
         if re.search(pattern, normalized):
-            audio_tag.append(label)
-            audio_language.append(label)
+            if language_type == 'subtitle':
+                subtitle_language.append(label)
+            else:
+                audio_language.append(label)
 
     video_tag = list(dict.fromkeys(video_tag))
     audio_tag = list(dict.fromkeys(audio_tag))
+    audio_language = list(dict.fromkeys(audio_language))
+    subtitle_language = list(dict.fromkeys(subtitle_language))
 
     return {
         'video_tag': ' '.join(video_tag),
@@ -1114,14 +1144,77 @@ def parse_stream_tags_from_filename(filename):
         'video_resolution': video_resolution,
         'video_source': video_source,
         'video_codec': video_codec_label,
+        'video_aspect_label': video_aspect_label,
         'hdr': hdr_label,
         'hdr_type': hdr_type,
         'audio_codec': audio_codec_label,
         'audio_channels': audio_channels_label,
         'audio_language': ' '.join(audio_language),
+        'audio_language_list': audio_language,
+        'subtitle_language_list': subtitle_language,
         'audio_object': audio_object,
         'audio_profile': audio_profile,
     }
+
+
+def apply_playback_stream_details(list_item, playback_url, filename='', fallback_name=''):
+    """Gan fake playback path + stream tags de skin doc media flags on dinh."""
+    playback_base = (playback_url or '').split('?')[0].rstrip('/')
+    resolved_name = str(filename or '').strip()
+
+    if not resolved_name and playback_base:
+        resolved_name = os.path.basename(playback_base).strip()
+    if not resolved_name:
+        resolved_name = str(fallback_name or '').strip()
+    if not resolved_name:
+        return ''
+
+    fake_name_for_path = re.sub(
+        r'(?i)(?<!\d)(2160p|1080p|720p|576p|480p|4k|uhd|ultrahd|ultra-hd)(?!\d)',
+        '',
+        resolved_name
+    )
+    fake_name_for_path = re.sub(r'\.{2,}', '.', fake_name_for_path)
+    fake_name_for_path = re.sub(r'\s{2,}', ' ', fake_name_for_path).strip(' ._-') or resolved_name
+
+    if playback_base:
+        fake_path = playback_base
+        if not playback_base.lower().endswith(fake_name_for_path.lower()):
+            fake_path = playback_base + '/' + fake_name_for_path
+        list_item.setPath(fake_path)
+
+    stream_tags = parse_stream_tags_from_filename(resolved_name)
+    apply_stream_props(list_item, stream_tags)
+    return resolved_name
+
+
+def apply_browse_stream_details(list_item, filename='', fallback_path=''):
+    """Gan path co ten file that va stream tags cho browse items."""
+    resolved_name = str(filename or '').strip()
+    if not resolved_name:
+        resolved_name = os.path.basename(str(fallback_path or '').split('?')[0]).strip()
+    if not resolved_name:
+        return ''
+
+    fake_name_for_path = re.sub(
+        r'(?i)(?<!\d)(2160p|1080p|720p|576p|480p|4k|uhd|ultrahd|ultra-hd)(?!\d)',
+        '',
+        resolved_name
+    )
+    fake_name_for_path = re.sub(r'\.{2,}', '.', fake_name_for_path)
+    fake_name_for_path = re.sub(r'\s{2,}', ' ', fake_name_for_path).strip(' ._-') or resolved_name
+
+    # Giup skin co FileNameAndPath on dinh cho che do browse.
+    try:
+        current_path = list_item.getPath() or ''
+    except Exception:
+        current_path = ''
+    if not current_path or current_path.startswith('plugin://'):
+        list_item.setPath(fake_name_for_path)
+
+    stream_tags = parse_stream_tags_from_filename(resolved_name)
+    apply_stream_props(list_item, stream_tags)
+    return resolved_name
 
 
 def parse_media_identity_from_filename(filename, fallback_title=''):
@@ -2203,7 +2296,7 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 list_item.setArt(art)
 
             if is_video_file:
-                apply_stream_props(list_item, stream_tags)
+                apply_browse_stream_details(list_item, filename=name, fallback_path=item_url)
 
             if show_lookup_debug_ids:
                 list_item.setProperty('debug.imdb_id', resolved_imdb_id)
@@ -2531,7 +2624,7 @@ def list_community(page=1):
                 list_item.setArt(art)
 
             if is_video_file:
-                apply_stream_props(list_item, stream_tags)
+                apply_browse_stream_details(list_item, filename=name, fallback_path=link)
 
             if show_lookup_debug_ids:
                 list_item.setProperty('debug.imdb_id', resolved_imdb_id)
@@ -2908,7 +3001,7 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
                     art[art_key] = val
             list_item.setArt(art)
 
-        apply_stream_props(list_item, stream_tags)
+        apply_browse_stream_details(list_item, filename=link_info.get('title', ''), fallback_path=play_url)
 
         list_item.setProperty('IsPlayable', 'true')
 
@@ -3191,23 +3284,14 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
 
     # ------------------------------------------------------------------ #
     # Tên file gốc để skin check FileNameAndPath (atmos/dtsx/bluray/4K...)
-    # CDN URL không chứa tên file → ghép filename vào cuối CDN path (bỏ query string).
-    # Skin AH2 dùng String.Contains(ListItem.FileNameAndPath,...) và
-    # String.Contains(Player.FileNameAndPath,...) trong Image_AudioCodec,
-    # Image_RipSource, Image_OSD_AudioCodec, Image_OSD_RipSource.
+    # đồng thời apply stream tags cho resolved ListItem.
     # ------------------------------------------------------------------ #
-    _filename = (filename or os.path.basename((fshare_url or '').split('?')[0])).strip()
-    if _filename:
-        cdn_base = cdn_url.split('?')[0].rstrip('/')
-        fake_path = cdn_base + '/' + _filename
-        list_item.setPath(fake_path)
-
-    # Parse và apply stream tags (audio codec, video codec, HDR, channels...)
-    # apply_stream_props cũng gọi setHdrType() vào VideoInfoTag để
-    # Image_HDR_Codec / Image_OSD_HDR_Codec hoạt động đúng.
-    if _filename:
-        stream_tags = parse_stream_tags_from_filename(_filename)
-        apply_stream_props(list_item, stream_tags)
+    _filename = apply_playback_stream_details(
+        list_item,
+        cdn_url,
+        filename=filename,
+        fallback_name=os.path.basename((fshare_url or '').split('?')[0]) or title,
+    )
 
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(title or '')
@@ -3543,6 +3627,13 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     list_item = xbmcgui.ListItem(label=ctx_title, path=cdn_url)
     list_item.setProperty('IsPlayable', 'true')
 
+    apply_playback_stream_details(
+        list_item,
+        cdn_url,
+        filename=best_title,
+        fallback_name=title,
+    )
+
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(ctx_title)
     if ctx_plot:
@@ -3611,7 +3702,8 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             xbmc.log(f"auto_play_fshare: updateInfoTag error: {e}", level=xbmc.LOGWARNING)
 
 
-def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year, season=None, episode=None, tvshowtitle=None):
+def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year,
+                           season=None, episode=None, tvshowtitle=None, filename=''):
     import json as _json
 
     # Neu chua co ID va setting fetch_ids_on_play bat -> tra API ngay truoc khi play
@@ -3645,6 +3737,15 @@ def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year, 
         xbmc.log(f"Set script.trakt.ids: {_json.dumps(trakt_ids)}", level=xbmc.LOGINFO)
 
     list_item = xbmcgui.ListItem(label=movie_title, path=play_url)
+    list_item.setProperty('IsPlayable', 'true')
+
+    apply_playback_stream_details(
+        list_item,
+        play_url,
+        filename=filename,
+        fallback_name=movie_title,
+    )
+
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(movie_title)
 
@@ -3943,6 +4044,7 @@ def router(paramstring):
                 season=params.get('season') or None,
                 episode=params.get('episode') or None,
                 tvshowtitle=params.get('tvshowtitle') or None,
+                filename=params.get('filename') or params.get('title') or '',
             )
 
         elif action == 'auto_play_fshare':
