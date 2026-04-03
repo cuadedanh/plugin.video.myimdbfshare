@@ -33,10 +33,312 @@ TMDB_LOOKUP_CACHE_FILE = os.path.join(ADDON_DATA_PATH, 'tmdb_lookup_cache.json')
 GSHEET_CACHE_FILE      = os.path.join(ADDON_DATA_PATH, 'gsheet_cache.json')
 GSHEET_CACHE_TTL = 300
 
+SEARCH_HISTORY_FILE    = os.path.join(ADDON_DATA_PATH, 'search_history.json')
+PLAY_HISTORY_FILE      = os.path.join(ADDON_DATA_PATH, 'play_history.json')
+HISTORY_MAX            = 15
+
 
 def notify(msg, title='Fshare', duration=3000):
     """Hiển thị thông báo nhanh trong Kodi."""
     xbmcgui.Dialog().notification(title, msg, time=duration)
+
+# ---------------------------------------------------------------------------
+# HISTORY — lịch sử tìm kiếm & lịch sử xem
+# ---------------------------------------------------------------------------
+
+def _format_history_time(ts):
+    """Chuyển Unix timestamp thành chuỗi thân thiện: Hôm nay HH:MM / Hôm qua HH:MM / N ngày trước / DD/MM/YYYY."""
+    try:
+        import datetime
+        now   = datetime.datetime.now()
+        dt    = datetime.datetime.fromtimestamp(ts)
+        delta = (now.date() - dt.date()).days
+        hhmm  = dt.strftime('%H:%M')
+        if delta == 0:
+            return f'Hôm nay {hhmm}'
+        elif delta == 1:
+            return f'Hôm qua {hhmm}'
+        elif delta <= 6:
+            return f'{delta} ngày trước'
+        else:
+            return dt.strftime('%d/%m/%Y')
+    except Exception:
+        return ''
+
+
+def _format_size(size_bytes):
+    """Trả về chuỗi dung lượng dễ đọc: 19.4 GB / 850 MB."""
+    try:
+        b = int(size_bytes or 0)
+        if b >= 1024 ** 3:
+            return f'{b / (1024 ** 3):.1f} GB'
+        elif b >= 1024 ** 2:
+            return f'{b / (1024 ** 2):.0f} MB'
+        return ''
+    except Exception:
+        return ''
+
+
+def load_search_history():
+    """Trả về list[dict] từ search_history.json, [] nếu lỗi."""
+    try:
+        if os.path.exists(SEARCH_HISTORY_FILE):
+            with open(SEARCH_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def save_search_history(query):
+    """Prepend query vào đầu lịch sử, deduplicate, giới hạn HISTORY_MAX."""
+    if not query or not query.strip():
+        return
+    query = query.strip()
+    try:
+        history = load_search_history()
+        # Loại bỏ duplicate cũ (case-insensitive)
+        history = [h for h in history if h.get('query', '').lower() != query.lower()]
+        history.insert(0, {'query': query, 'time': int(time.time())})
+        history = history[:HISTORY_MAX]
+        with open(SEARCH_HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        xbmc.log(f'save_search_history error: {e}', level=xbmc.LOGWARNING)
+
+
+def clear_search_history():
+    """Xóa toàn bộ lịch sử tìm kiếm."""
+    try:
+        if os.path.exists(SEARCH_HISTORY_FILE):
+            os.remove(SEARCH_HISTORY_FILE)
+    except Exception as e:
+        xbmc.log(f'clear_search_history error: {e}', level=xbmc.LOGWARNING)
+
+
+def load_play_history():
+    """Trả về list[dict] từ play_history.json, [] nếu lỗi."""
+    try:
+        if os.path.exists(PLAY_HISTORY_FILE):
+            with open(PLAY_HISTORY_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def save_play_history(title='', year='', filename='', fshare_url='',
+                      imdb_id='', tmdb_id='', poster_url='', size_bytes=0):
+    """Prepend entry vào đầu lịch sử xem, deduplicate theo fshare_url, giới hạn HISTORY_MAX."""
+    if not fshare_url and not filename:
+        return
+    try:
+        history = load_play_history()
+        # Deduplicate theo fshare_url (nếu có), fallback theo filename
+        if fshare_url:
+            history = [h for h in history if h.get('fshare_url', '') != fshare_url]
+        elif filename:
+            history = [h for h in history if h.get('filename', '') != filename]
+        entry = {
+            'title':      title or '',
+            'year':       str(year or ''),
+            'filename':   filename or '',
+            'fshare_url': fshare_url or '',
+            'imdb_id':    imdb_id or '',
+            'tmdb_id':    tmdb_id or '',
+            'poster_url': poster_url or '',
+            'size_bytes': int(size_bytes or 0),
+            'time':       int(time.time()),
+        }
+        history.insert(0, entry)
+        history = history[:HISTORY_MAX]
+        with open(PLAY_HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        xbmc.log(
+            f"save_play_history: '{title or filename}' fshare={bool(fshare_url)}",
+            level=xbmc.LOGINFO
+        )
+    except Exception as e:
+        xbmc.log(f'save_play_history error: {e}', level=xbmc.LOGWARNING)
+
+
+def clear_play_history():
+    """Xóa toàn bộ lịch sử xem."""
+    try:
+        if os.path.exists(PLAY_HISTORY_FILE):
+            os.remove(PLAY_HISTORY_FILE)
+    except Exception as e:
+        xbmc.log(f'clear_play_history error: {e}', level=xbmc.LOGWARNING)
+
+
+def list_play_history():
+    """
+    Hiển thị danh sách lịch sử xem gần đây.
+    - Bấm vào item → play thẳng qua fshare_url (nếu còn) hoặc search lại.
+    - Context menu: 'Tìm lại link mới' để search lại dù link còn sống.
+    """
+    xbmcplugin.setPluginCategory(addon_handle, 'Lịch sử xem gần đây')
+    xbmcplugin.setContent(addon_handle, 'movies')
+
+    history = load_play_history()
+
+    # Nút xóa — đặt trên cùng
+    clear_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'clear_play_history'})
+    clear_item = xbmcgui.ListItem('[🗑 Xóa lịch sử xem]')
+    clear_item.setArt({'icon': 'DefaultAddonProgram.png'})
+    xbmcplugin.addDirectoryItem(handle=addon_handle, url=clear_url, listitem=clear_item, isFolder=False)
+
+    if not history:
+        empty_item = xbmcgui.ListItem('(Chưa có lịch sử xem)')
+        xbmcplugin.addDirectoryItem(handle=addon_handle, url='', listitem=empty_item, isFolder=False)
+        xbmcplugin.endOfDirectory(addon_handle)
+        return
+
+    list_items = []
+    for entry in history:
+        title      = entry.get('title', '')
+        year       = entry.get('year', '')
+        filename   = entry.get('filename', '')
+        fshare_url = entry.get('fshare_url', '')
+        imdb_id    = entry.get('imdb_id', '')
+        tmdb_id    = entry.get('tmdb_id', '')
+        poster_url = entry.get('poster_url', '')
+        size_bytes = entry.get('size_bytes', 0)
+        ts         = entry.get('time', 0)
+
+        # Label chính: "Title (Year)" hoặc filename nếu không có title
+        if title:
+            label = f'{title} ({year})' if year else title
+        else:
+            label = filename or '(không rõ)'
+
+        # Label phụ (plot): filename · size · thời gian
+        parts = []
+        if filename:
+            parts.append(filename)
+        size_str = _format_size(size_bytes)
+        if size_str:
+            parts.append(size_str)
+        time_str = _format_history_time(ts)
+        if time_str:
+            parts.append(time_str)
+        plot_text = ' · '.join(parts)
+
+        li = xbmcgui.ListItem(label=label)
+        info_tag = li.getVideoInfoTag()
+        info_tag.setTitle(title or filename)
+        if plot_text:
+            info_tag.setPlot(plot_text)
+        if year and str(year).isdigit():
+            info_tag.setYear(int(year))
+        ids = {}
+        if imdb_id:
+            ids['imdb'] = imdb_id
+            info_tag.setIMDBNumber(imdb_id)
+        if tmdb_id:
+            ids['tmdb'] = tmdb_id
+        if ids:
+            info_tag.setUniqueIDs(ids, 'imdb' if imdb_id else 'tmdb')
+        info_tag.setMediaType('movie')
+
+        if poster_url:
+            li.setArt({'poster': poster_url, 'thumb': poster_url})
+
+        li.setProperty('IsPlayable', 'true')
+
+        # Action chính: play thẳng nếu có fshare_url, fallback search lại
+        if fshare_url:
+            play_params = {
+                'action':    'play_fshare_direct',
+                'url':       fshare_url,
+                'imdb':      imdb_id,
+                'tmdb':      tmdb_id,
+                'title':     title,
+                'year':      year,
+                'filename':  filename,
+            }
+            play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
+        else:
+            # Không có fshare_url → search lại theo title/filename
+            search_again_params = {
+                'action': 'search_fshare',
+                'title':  title or filename,
+                'year':   year,
+                'imdb':   imdb_id,
+                'tmdb':   tmdb_id,
+            }
+            play_url = sys.argv[0] + '?' + urllib.parse.urlencode(search_again_params)
+
+        # Context menu: tìm lại link mới
+        search_new_params = {
+            'action': 'search_fshare',
+            'title':  title or filename,
+            'year':   year,
+            'imdb':   imdb_id,
+            'tmdb':   tmdb_id,
+        }
+        search_new_url = sys.argv[0] + '?' + urllib.parse.urlencode(search_new_params)
+        li.addContextMenuItems([
+            ('🔍 Tìm lại link mới', f'Container.Update({search_new_url})'),
+        ])
+
+        list_items.append((play_url, li, False))
+
+    xbmcplugin.addDirectoryItems(addon_handle, list_items)
+    xbmcplugin.endOfDirectory(addon_handle)
+
+
+def list_search_history():
+    """
+    Hiển thị danh sách lịch sử tìm kiếm.
+    Dùng trong action 'search_manual' — hiện trước keyboard nếu có lịch sử.
+    Mỗi item bấm vào sẽ chạy search ngay với query đã lưu.
+    """
+    xbmcplugin.setPluginCategory(addon_handle, 'Tìm kiếm Fshare')
+    xbmcplugin.setContent(addon_handle, 'files')
+
+    # Nút nhập tìm kiếm mới — đặt trên cùng
+    new_search_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'search_manual_keyboard'})
+    new_item = xbmcgui.ListItem('[🔍 Nhập tìm kiếm mới]')
+    new_item.setArt({'icon': 'DefaultAddonsSearch.png'})
+    xbmcplugin.addDirectoryItem(handle=addon_handle, url=new_search_url, listitem=new_item, isFolder=False)
+
+    history = load_search_history()
+
+    if not history:
+        xbmcplugin.endOfDirectory(addon_handle)
+        return
+
+    # Nút xóa lịch sử tìm kiếm
+    clear_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'clear_search_history'})
+    clear_item = xbmcgui.ListItem('[🗑 Xóa lịch sử tìm kiếm]')
+    clear_item.setArt({'icon': 'DefaultAddonProgram.png'})
+    xbmcplugin.addDirectoryItem(handle=addon_handle, url=clear_url, listitem=clear_item, isFolder=False)
+
+    list_items = []
+    for entry in history:
+        query    = entry.get('query', '')
+        ts       = entry.get('time', 0)
+        if not query:
+            continue
+        time_str = _format_history_time(ts)
+        label    = query
+        plot_text = time_str if time_str else ''
+
+        li = xbmcgui.ListItem(label=label)
+        info_tag = li.getVideoInfoTag()
+        info_tag.setTitle(query)
+        if plot_text:
+            info_tag.setPlot(plot_text)
+        li.setArt({'icon': 'DefaultAddonsSearch.png'})
+
+        run_params = {'action': 'run_search_history', 'query': query}
+        run_url = sys.argv[0] + '?' + urllib.parse.urlencode(run_params)
+        list_items.append((run_url, li, True))
+
+    xbmcplugin.addDirectoryItems(addon_handle, list_items)
+    xbmcplugin.endOfDirectory(addon_handle)
+
 
 def load_local_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -825,13 +1127,17 @@ def apply_stream_props(list_item, stream_tags):
         'audio_tag':                    st.get('audio_tag', ''),
         'VideoResolution':              st.get('video_resolution', ''),
         'VideoCodec':                   st.get('video_codec', ''),
-        'VideoAspect':                  st.get('video_aspect_label', ''),
         'VideoSource':                  st.get('video_source', ''),
         'VideoHDR':                     st.get('hdr', ''),
         'HdrType':                      st.get('hdr_type', ''),
         'AudioCodec':                   st.get('audio_codec', ''),
         'AudioChannels':                st.get('audio_channels', ''),
         'AudioLanguage':                st.get('audio_language', ''),
+        # AH2 đọc flag ngôn ngữ qua ListItem.Property(AudioLanguage.1), (AudioLanguage.2)...
+        # audio_language có thể là chuỗi "VieSub TM ENG" -> tách thành từng slot đánh số
+        **{f'AudioLanguage.{i+1}': lang
+           for i, lang in enumerate((st.get('audio_language', '') or '').split())
+           if lang},
         'AudioProfile':                 st.get('audio_profile', ''),
         'AudioObject':                  st.get('audio_object', ''),
         'AudioAtmos':                   st.get('audio_object', ''),
@@ -847,13 +1153,11 @@ def apply_stream_props(list_item, stream_tags):
         'VideoPlayer.AudioCodecCombined': st.get('audio_profile', '') or st.get('audio_codec', ''),
         'VideoPlayer.VideoResolution':  st.get('video_resolution', ''),
         'VideoPlayer.VideoCodec':       st.get('video_codec', ''),
-        'VideoPlayer.VideoAspect':      st.get('video_aspect_label', ''),
         'VideoPlayer.VideoSource':      st.get('video_source', ''),
         'VideoPlayer.HdrType':          st.get('hdr_type', ''),
         'VideoPlayer.HDRType':          st.get('hdr', ''),
         'VideoInfo.VideoResolution':    st.get('video_resolution', ''),
         'VideoInfo.VideoCodec':         st.get('video_codec', ''),
-        'VideoInfo.VideoAspect':        st.get('video_aspect_label', ''),
         'VideoInfo.VideoSource':        st.get('video_source', ''),
         'VideoInfo.AudioCodec':         st.get('audio_codec', ''),
         'VideoInfo.AudioChannels':      st.get('audio_channels', ''),
@@ -866,7 +1170,6 @@ def apply_stream_props(list_item, stream_tags):
         'VideoInfo.HdrType':            st.get('hdr_type', ''),
         'media.videoresolution':        st.get('video_resolution', ''),
         'media.videocodec':             st.get('video_codec', ''),
-        'media.videoaspect':            st.get('video_aspect_label', ''),
         'media.videosource':            st.get('video_source', ''),
         'media.hdr':                    st.get('hdr', ''),
         'media.hdrtype':                st.get('hdr_type', ''),
@@ -893,7 +1196,6 @@ def apply_stream_props(list_item, stream_tags):
         'audio.codec_combined':         st.get('audio_profile', '') or st.get('audio_codec', ''),
         'video.codec':                  st.get('video_codec', ''),
         'video.resolution':             st.get('video_resolution', ''),
-        'video.aspect':                 st.get('video_aspect_label', ''),
         'video.source':                 st.get('video_source', ''),
         'video.hdr':                    st.get('hdr', ''),
         'video.hdrtype':                st.get('hdr_type', ''),
@@ -904,15 +1206,12 @@ def apply_stream_props(list_item, stream_tags):
         'HasDTSX':     'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
         'AudioIsDTSX': 'true' if 'dts:x' in st.get('audio_profile', '').lower() else '',
     }
-    for idx, lang_code in enumerate(st.get('audio_language_list', [])[:5], start=1):
-        if lang_code:
-            prop_map[f'AudioLanguage.{idx}'] = lang_code
-    for idx, lang_code in enumerate(st.get('subtitle_language_list', [])[:5], start=1):
-        if lang_code:
-            prop_map[f'SubtitleLanguage.{idx}'] = lang_code
     for prop_name, prop_value in prop_map.items():
         if prop_value:
             list_item.setProperty(prop_name, str(prop_value))
+
+
+
 
 def parse_stream_tags_from_filename(filename):
     """
@@ -929,13 +1228,11 @@ def parse_stream_tags_from_filename(filename):
     video_resolution = ''
     video_source = ''
     video_codec_label = ''
-    video_aspect_label = ''
     hdr_label = ''
     hdr_type = ''
     audio_codec_label = ''
     audio_channels_label = ''
     audio_language = []
-    subtitle_language = []
     audio_object = ''
     audio_profile = ''
 
@@ -992,22 +1289,10 @@ def parse_stream_tags_from_filename(filename):
             video_stream['codec'] = codec
             break
 
-    aspect_patterns = [
-        (r'(?<!\d)(2[.\- ]?(?:39|40))(?:[: ]?1)?', ('2.39', 2.39)),
-        (r'(?<!\d)(1[.\- ]?85)(?:[: ]?1)?', ('1.85', 1.85)),
-        (r'(?<!\d)(1[.\- ]?78|16[:x ]9)(?:[: ]?1)?', ('1.78', 1.78)),
-        (r'(?<!\d)(1[.\- ]?33|4[:x ]3)(?:[: ]?1)?', ('1.33', 1.33)),
-    ]
-    for pattern, (label, aspect_value) in aspect_patterns:
-        if re.search(pattern, normalized):
-            video_aspect_label = label
-            video_stream['aspect'] = aspect_value
-            break
-
     hdr_matches = []
     hdr_patterns = [
         (r'HDR10\+', 'HDR10+'),
-        (r'DOLBY[.\- ]?VISION|(?:^|[ \.\-_\[\(])DO?VI(?:$|[ \.\-_\]\)])|(?:^|[ \.\-_\[\(])DV(?:$|[ \.\-_\]\)])', 'DV'),
+        (r'DOLBY[.\- ]?VISION|DO?VI|(?<![A-Z])DV(?![A-Z0-9])', 'DV'),
         (r'HDR10', 'HDR10'),
         (r'(?<!SDR)HDR(?!IP)', 'HDR'),
     ]
@@ -1113,28 +1398,23 @@ def parse_stream_tags_from_filename(filename):
             audio_profile = audio_object
 
     language_patterns = [
-        (r'VIETSUB|SUB[.\- ]?VIET|HARD[.\- ]?SUB|HARDSUB', 'subtitle', 'vie'),
-        (r'SUB[.\- ]?ENG|ENG[.\- ]?SUB', 'subtitle', 'eng'),
-        (r'THUYET[.\- ]?MINH|\bTM\b', 'audio', 'vie'),
-        (r'(?<![A-Z])VIE(?![A-Z])|VIETNAMESE', 'audio', 'vie'),
-        (r'(?<![A-Z])ENG(?![A-Z])|ENGLISH', 'audio', 'eng'),
-        (r'(?<![A-Z])JPN(?![A-Z])|JAPANESE|(?<![A-Z])JAP(?![A-Z])', 'audio', 'jpn'),
-        (r'(?<![A-Z])KOR(?![A-Z])|KOREAN', 'audio', 'kor'),
-        (r'(?<![A-Z])THA(?![A-Z])|THAI', 'audio', 'tha'),
-        (r'(?<![A-Z])CHI(?![A-Z])|CHINESE|MANDARIN|CANTONESE', 'audio', 'chi'),
-        (r'\bMULTI\b', 'audio', 'unk'),
+        (r'VIETSUB|SUB[.\- ]?VIET', 'VieSub'),
+        (r'HARD[.\- ]?SUB|HARDSUB', 'VieSub'),
+        (r'THUYET[.\- ]?MINH|\bTM\b', 'TM'),
+        (r'USLT', 'USLT'),
+        (r'(?<![A-Z])VIE(?![A-Z])|VIET', 'ViE'),
+        (r'(?<![A-Z])ENG(?![A-Z])|ENGLISH', 'ENG'),
+        (r'\bMULTI\b', 'Multi'),
+        (r'\bDUAL\b', 'Dual'),
+        (r'\bAI\b', 'AI'),
     ]
-    for pattern, language_type, label in language_patterns:
+    for pattern, label in language_patterns:
         if re.search(pattern, normalized):
-            if language_type == 'subtitle':
-                subtitle_language.append(label)
-            else:
-                audio_language.append(label)
+            audio_tag.append(label)
+            audio_language.append(label)
 
     video_tag = list(dict.fromkeys(video_tag))
     audio_tag = list(dict.fromkeys(audio_tag))
-    audio_language = list(dict.fromkeys(audio_language))
-    subtitle_language = list(dict.fromkeys(subtitle_language))
 
     return {
         'video_tag': ' '.join(video_tag),
@@ -1144,77 +1424,14 @@ def parse_stream_tags_from_filename(filename):
         'video_resolution': video_resolution,
         'video_source': video_source,
         'video_codec': video_codec_label,
-        'video_aspect_label': video_aspect_label,
         'hdr': hdr_label,
         'hdr_type': hdr_type,
         'audio_codec': audio_codec_label,
         'audio_channels': audio_channels_label,
         'audio_language': ' '.join(audio_language),
-        'audio_language_list': audio_language,
-        'subtitle_language_list': subtitle_language,
         'audio_object': audio_object,
         'audio_profile': audio_profile,
     }
-
-
-def apply_playback_stream_details(list_item, playback_url, filename='', fallback_name=''):
-    """Gan fake playback path + stream tags de skin doc media flags on dinh."""
-    playback_base = (playback_url or '').split('?')[0].rstrip('/')
-    resolved_name = str(filename or '').strip()
-
-    if not resolved_name and playback_base:
-        resolved_name = os.path.basename(playback_base).strip()
-    if not resolved_name:
-        resolved_name = str(fallback_name or '').strip()
-    if not resolved_name:
-        return ''
-
-    fake_name_for_path = re.sub(
-        r'(?i)(?<!\d)(2160p|1080p|720p|576p|480p|4k|uhd|ultrahd|ultra-hd)(?!\d)',
-        '',
-        resolved_name
-    )
-    fake_name_for_path = re.sub(r'\.{2,}', '.', fake_name_for_path)
-    fake_name_for_path = re.sub(r'\s{2,}', ' ', fake_name_for_path).strip(' ._-') or resolved_name
-
-    if playback_base:
-        fake_path = playback_base
-        if not playback_base.lower().endswith(fake_name_for_path.lower()):
-            fake_path = playback_base + '/' + fake_name_for_path
-        list_item.setPath(fake_path)
-
-    stream_tags = parse_stream_tags_from_filename(resolved_name)
-    apply_stream_props(list_item, stream_tags)
-    return resolved_name
-
-
-def apply_browse_stream_details(list_item, filename='', fallback_path=''):
-    """Gan path co ten file that va stream tags cho browse items."""
-    resolved_name = str(filename or '').strip()
-    if not resolved_name:
-        resolved_name = os.path.basename(str(fallback_path or '').split('?')[0]).strip()
-    if not resolved_name:
-        return ''
-
-    fake_name_for_path = re.sub(
-        r'(?i)(?<!\d)(2160p|1080p|720p|576p|480p|4k|uhd|ultrahd|ultra-hd)(?!\d)',
-        '',
-        resolved_name
-    )
-    fake_name_for_path = re.sub(r'\.{2,}', '.', fake_name_for_path)
-    fake_name_for_path = re.sub(r'\s{2,}', ' ', fake_name_for_path).strip(' ._-') or resolved_name
-
-    # Giup skin co FileNameAndPath on dinh cho che do browse.
-    try:
-        current_path = list_item.getPath() or ''
-    except Exception:
-        current_path = ''
-    if not current_path or current_path.startswith('plugin://'):
-        list_item.setPath(fake_name_for_path)
-
-    stream_tags = parse_stream_tags_from_filename(resolved_name)
-    apply_stream_props(list_item, stream_tags)
-    return resolved_name
 
 
 def parse_media_identity_from_filename(filename, fallback_title=''):
@@ -1454,13 +1671,26 @@ def search_fshare(movie_title, movie_year=None, season=None, episode=None):
 
 def search_fshare_manual():
     """
-    Cho phép người dùng nhập từ khóa tìm kiếm từ bàn phím.
+    Hiển thị lịch sử tìm kiếm trước, cho phép chọn lại hoặc nhập mới.
+    Nếu chưa có lịch sử, mở keyboard ngay.
+    """
+    history = load_search_history()
+    if history:
+        list_search_history()
+    else:
+        search_fshare_manual_keyboard()
+
+
+def search_fshare_manual_keyboard():
+    """
+    Mở keyboard để nhập từ khóa tìm kiếm mới, lưu vào lịch sử.
     """
     keyboard = xbmc.Keyboard('', 'Nhập tên phim cần tìm trên Fshare')
     keyboard.doModal()
     if keyboard.isConfirmed():
         query = keyboard.getText().strip()
         if query:
+            save_search_history(query)
             show_fshare_links(query, '')
 
 def create_strm_file(title, url, movie_info=None):
@@ -1868,38 +2098,52 @@ def fshare_login():
     return '', ''
 
 
-def fshare_is_valid(session_id):
-    """Kiểm tra session còn hợp lệ không."""
-    if not session_id:
-        return False
-    try:
-        headers = {'User-Agent': FSHARE_USER_AGENT, 'Cookie': f'session_id={session_id}'}
-        r = requests.get('https://api.fshare.vn/api/user/get', headers=headers,
-                         verify=False, timeout=10)
-        data = r.json()
-        return r.status_code == 200 and 'error' not in data and data.get('account_type')
-    except Exception:
-        return False
+# FSHARE_SESSION_TTL: số giây coi session còn hợp lệ kể từ lần login cuối.
+# Fshare thực tế giữ session nhiều giờ; 6h là ngưỡng an toàn.
+# Nếu token thực sự bị revoke sớm hơn, fshare_get_download_link sẽ tự phát hiện
+# (location rỗng) và login lại — không cần HTTP check ở đây.
+FSHARE_SESSION_TTL = 6 * 3600  # 6 giờ
 
 
 def fshare_check_session():
     """
     Trả về (token, session_id) hợp lệ.
-    Tự động login lại nếu session hết hạn.
+    Dùng timestamp thay HTTP check: nếu login trong vòng FSHARE_SESSION_TTL giây
+    → tin tưởng session còn hạn, dùng ngay mà không gọi HTTP.
+    Nếu hết TTL hoặc chưa có token → login lại.
+    Trường hợp token bị revoke sớm bất thường: fshare_get_download_link
+    tự phát hiện (location rỗng) và retry login — không cần kiểm tra ở đây.
     """
     token      = get_local_setting('fshare_token', '')
     session_id = get_local_setting('fshare_session_id', '')
-    if token and session_id and fshare_is_valid(session_id):
-        return token, session_id
-    xbmc.log("Fshare session expired or missing — re-login", level=xbmc.LOGINFO)
+
+    if token and session_id:
+        try:
+            login_time = int(get_local_setting('fshare_timelog', '0') or 0)
+            elapsed    = int(time.time()) - login_time
+            if elapsed < FSHARE_SESSION_TTL:
+                xbmc.log(
+                    f"Fshare session reused (age {elapsed//60}m/{FSHARE_SESSION_TTL//60}m)",
+                    level=xbmc.LOGDEBUG
+                )
+                return token, session_id
+            xbmc.log(
+                f"Fshare session TTL exceeded ({elapsed//60}m) — re-login",
+                level=xbmc.LOGINFO
+            )
+        except Exception:
+            pass  # Không parse được timelog → cứ login lại cho chắc
+
+    xbmc.log("Fshare session missing or expired — login", level=xbmc.LOGINFO)
     return fshare_login()
 
 
 def fshare_logout():
-    """Xóa token/session_id đã lưu, buộc login lại lần sau."""
+    """Xóa token/session_id/timelog đã lưu, buộc login lại lần sau."""
     set_local_setting('fshare_token', '')
     set_local_setting('fshare_session_id', '')
-    xbmc.log("Fshare: logged out (token cleared)", level=xbmc.LOGINFO)
+    set_local_setting('fshare_timelog', '0')
+    xbmc.log("Fshare: logged out (token + timelog cleared)", level=xbmc.LOGINFO)
 
 
 def fshare_relogin():
@@ -2296,7 +2540,7 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 list_item.setArt(art)
 
             if is_video_file:
-                apply_browse_stream_details(list_item, filename=name, fallback_path=item_url)
+                apply_stream_props(list_item, stream_tags)
 
             if show_lookup_debug_ids:
                 list_item.setProperty('debug.imdb_id', resolved_imdb_id)
@@ -2367,6 +2611,13 @@ def main_menu():
     community_item = xbmcgui.ListItem('[👥 Cộng đồng chia sẻ]')
     community_item.setArt({'icon': 'DefaultAddonVideo.png'})
     xbmcplugin.addDirectoryItem(handle=addon_handle, url=community_url, listitem=community_item, isFolder=True)
+
+    # --- Lịch sử xem gần đây (chỉ hiện nếu có dữ liệu) ---
+    if load_play_history():
+        history_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'list_play_history'})
+        history_item = xbmcgui.ListItem('[⏱ Lịch sử xem gần đây]')
+        history_item.setArt({'icon': 'DefaultAddonVideo.png'})
+        xbmcplugin.addDirectoryItem(handle=addon_handle, url=history_url, listitem=history_item, isFolder=True)
 
     settings_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'settings_menu'})
     settings_item = xbmcgui.ListItem('[⚙️ Cài đặt]')
@@ -2624,7 +2875,7 @@ def list_community(page=1):
                 list_item.setArt(art)
 
             if is_video_file:
-                apply_browse_stream_details(list_item, filename=name, fallback_path=link)
+                apply_stream_props(list_item, stream_tags)
 
             if show_lookup_debug_ids:
                 list_item.setProperty('debug.imdb_id', resolved_imdb_id)
@@ -3001,7 +3252,7 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
                     art[art_key] = val
             list_item.setArt(art)
 
-        apply_browse_stream_details(list_item, filename=link_info.get('title', ''), fallback_path=play_url)
+        apply_stream_props(list_item, stream_tags)
 
         list_item.setProperty('IsPlayable', 'true')
 
@@ -3284,14 +3535,23 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
 
     # ------------------------------------------------------------------ #
     # Tên file gốc để skin check FileNameAndPath (atmos/dtsx/bluray/4K...)
-    # đồng thời apply stream tags cho resolved ListItem.
+    # CDN URL không chứa tên file → ghép filename vào cuối CDN path (bỏ query string).
+    # Skin AH2 dùng String.Contains(ListItem.FileNameAndPath,...) và
+    # String.Contains(Player.FileNameAndPath,...) trong Image_AudioCodec,
+    # Image_RipSource, Image_OSD_AudioCodec, Image_OSD_RipSource.
     # ------------------------------------------------------------------ #
-    _filename = apply_playback_stream_details(
-        list_item,
-        cdn_url,
-        filename=filename,
-        fallback_name=os.path.basename((fshare_url or '').split('?')[0]) or title,
-    )
+    _filename = (filename or os.path.basename((fshare_url or '').split('?')[0])).strip()
+    if _filename:
+        cdn_base = cdn_url.split('?')[0].rstrip('/')
+        fake_path = cdn_base + '/' + _filename
+        list_item.setPath(fake_path)
+
+    # Parse và apply stream tags (audio codec, video codec, HDR, channels...)
+    # apply_stream_props cũng gọi setHdrType() vào VideoInfoTag để
+    # Image_HDR_Codec / Image_OSD_HDR_Codec hoạt động đúng.
+    if _filename:
+        stream_tags = parse_stream_tags_from_filename(_filename)
+        apply_stream_props(list_item, stream_tags)
 
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(title or '')
@@ -3340,12 +3600,30 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
         list_item.setArt(art)
 
     # ------------------------------------------------------------------ #
-    # 6. setResolvedUrl — trả CDN link + metadata về Kodi
+    # 6. Lưu lịch sử xem
+    # ------------------------------------------------------------------ #
+    try:
+        _hist_filename = (filename or os.path.basename((fshare_url or '').split('?')[0])).strip()
+        save_play_history(
+            title      = title or '',
+            year       = year  or '',
+            filename   = _hist_filename,
+            fshare_url = fshare_url or '',
+            imdb_id    = imdb_id   or '',
+            tmdb_id    = tmdb_id   or '',
+            poster_url = poster    or '',
+            size_bytes = 0,
+        )
+    except Exception as _e:
+        xbmc.log(f'play_fshare_direct: save_play_history error: {_e}', level=xbmc.LOGWARNING)
+
+    # ------------------------------------------------------------------ #
+    # 7. setResolvedUrl — trả CDN link + metadata về Kodi
     # ------------------------------------------------------------------ #
     xbmcplugin.setResolvedUrl(handle, True, listitem=list_item)
 
     # ------------------------------------------------------------------ #
-    # 7. updateInfoTag() sau khi player bắt đầu (Hướng 3)
+    # 8. updateInfoTag() sau khi player bắt đầu (Hướng 3)
     #    Đảm bảo skin hiện đúng plot/poster/IDs trong Now Playing,
     #    kể cả các skin không đọc metadata từ resolved ListItem.
     #    Chỉ chạy khi có metadata mới cần update (meta không rỗng).
@@ -3546,6 +3824,27 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     links.sort(key=lambda x: x.get('size', 0), reverse=True)
     best = links[0]
 
+    # Lưu lịch sử xem (auto_play)
+    try:
+        _best_furl = best.get('fshare_url') or best.get('url', '')
+        if _best_furl.startswith('plugin://'):
+            import re as _re
+            _m = _re.search(r'url=(https?://(?:www\.)?fshare\.vn/[^\s&\[\]]+)', _best_furl)
+            _best_furl = urllib.parse.unquote(_m.group(1)) if _m else ''
+        _ctx_poster = tmdb_ctx.get('poster', '') if tmdb_ctx else ''
+        save_play_history(
+            title      = ctx_title or title or '',
+            year       = year or '',
+            filename   = best.get('title', ''),
+            fshare_url = _best_furl,
+            imdb_id    = imdb_id or '',
+            tmdb_id    = tmdb_id or '',
+            poster_url = _ctx_poster,
+            size_bytes = best.get('size', 0),
+        )
+    except Exception as _e:
+        xbmc.log(f'auto_play_fshare: save_play_history error: {_e}', level=xbmc.LOGWARNING)
+
     best_title = best.get('title', '')
     best_size_gb = best.get('size', 0) / (1024 ** 3)
     xbmc.log(
@@ -3627,13 +3926,6 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     list_item = xbmcgui.ListItem(label=ctx_title, path=cdn_url)
     list_item.setProperty('IsPlayable', 'true')
 
-    apply_playback_stream_details(
-        list_item,
-        cdn_url,
-        filename=best_title,
-        fallback_name=title,
-    )
-
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(ctx_title)
     if ctx_plot:
@@ -3702,8 +3994,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             xbmc.log(f"auto_play_fshare: updateInfoTag error: {e}", level=xbmc.LOGWARNING)
 
 
-def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year,
-                           season=None, episode=None, tvshowtitle=None, filename=''):
+def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year, season=None, episode=None, tvshowtitle=None):
     import json as _json
 
     # Neu chua co ID va setting fetch_ids_on_play bat -> tra API ngay truoc khi play
@@ -3737,15 +4028,6 @@ def set_trakt_ids_and_play(play_url, imdb_id, tmdb_id, movie_title, movie_year,
         xbmc.log(f"Set script.trakt.ids: {_json.dumps(trakt_ids)}", level=xbmc.LOGINFO)
 
     list_item = xbmcgui.ListItem(label=movie_title, path=play_url)
-    list_item.setProperty('IsPlayable', 'true')
-
-    apply_playback_stream_details(
-        list_item,
-        play_url,
-        filename=filename,
-        fallback_name=movie_title,
-    )
-
     info_tag = list_item.getVideoInfoTag()
     info_tag.setTitle(movie_title)
 
@@ -3782,6 +4064,27 @@ def router(paramstring):
 
         if action == 'search_manual':
             search_fshare_manual()
+
+        elif action == 'search_manual_keyboard':
+            search_fshare_manual_keyboard()
+
+        elif action == 'run_search_history':
+            query = params.get('query', '')
+            if query:
+                show_fshare_links(query, '')
+
+        elif action == 'list_play_history':
+            list_play_history()
+
+        elif action == 'clear_search_history':
+            clear_search_history()
+            xbmcgui.Dialog().notification('Tìm kiếm', 'Đã xóa lịch sử tìm kiếm', time=2500)
+            xbmc.executebuiltin('Container.Refresh')
+
+        elif action == 'clear_play_history':
+            clear_play_history()
+            xbmcgui.Dialog().notification('Lịch sử xem', 'Đã xóa lịch sử xem', time=2500)
+            xbmc.executebuiltin('Container.Refresh')
 
         elif action == 'list_community':
             list_community(params.get('page', '1'))
@@ -4044,7 +4347,6 @@ def router(paramstring):
                 season=params.get('season') or None,
                 episode=params.get('episode') or None,
                 tvshowtitle=params.get('tvshowtitle') or None,
-                filename=params.get('filename') or params.get('title') or '',
             )
 
         elif action == 'auto_play_fshare':
