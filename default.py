@@ -301,7 +301,7 @@ def list_search_history():
     new_search_url = sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'search_manual_keyboard'})
     new_item = xbmcgui.ListItem('[🔍 Nhập tìm kiếm mới]')
     new_item.setArt({'icon': 'DefaultAddonsSearch.png'})
-    xbmcplugin.addDirectoryItem(handle=addon_handle, url=new_search_url, listitem=new_item, isFolder=False)
+    xbmcplugin.addDirectoryItem(handle=addon_handle, url=new_search_url, listitem=new_item, isFolder=True)
 
     history = load_search_history()
 
@@ -2016,7 +2016,7 @@ def show_fshare_files_from_api_response(api_response_str):
 # FSHARE AUTH — tích hợp trực tiếp, không phụ thuộc plugin.video.vietmediaF
 # ---------------------------------------------------------------------------
 FSHARE_LOGIN_API      = 'https://api.fshare.vn/api/user/login'
-FSHARE_DOWNLOAD_API   = 'https://api2.fshare.vn/api/session/download'
+FSHARE_DOWNLOAD_API   = 'https://api.fshare.vn/api/session/download'
 FSHARE_FILEOPS_GET    = 'https://api.fshare.vn/api/fileops/get'
 FSHARE_USER_AGENT     = 'kodivietmediaf-K58W6U'
 FSHARE_APP_KEY        = 'dMnqMMZMUnN5YpvKENaEhdQQ5jxDqddt'
@@ -2548,6 +2548,11 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 list_item.setProperty('debug.lookup_status', 'ok' if (resolved_imdb_id or resolved_tmdb_id) else 'missing')
 
             list_item.setProperty('IsPlayable', 'true')
+
+            # Skin dùng StreamFileNameAndPath để hiện icon source/codec khi browse
+            if name:
+                list_item.setProperty('StreamFileNameAndPath', name)
+
             # Kodi nhớ ListItem đã build đủ metadata — play_fshare_direct chỉ cần CDN url
             play_params = {
                 'action':      'play_fshare_direct',
@@ -2562,6 +2567,62 @@ def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
                 'filename':    name,
             }
             play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
+
+            # Context menu: .strm và Download cho tất cả file Fshare
+            strm_params = {
+                'action':      'create_strm',
+                'title':       name,
+                'url':         item_url,
+                'movie_title': effective_title,
+                'movie_year':  effective_year,
+                'imdb':        resolved_imdb_id,
+                'tmdb':        resolved_tmdb_id,
+                'season':      effective_season,
+                'episode':     effective_episode,
+                'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+                'video_resolution': stream_tags.get('video_resolution', ''),
+                'video_source':     stream_tags.get('video_source', ''),
+                'video_codec':      stream_tags.get('video_codec', ''),
+                'hdr':              stream_tags.get('hdr', ''),
+                'hdr_type':         stream_tags.get('hdr_type', ''),
+                'audio_codec':      stream_tags.get('audio_codec', ''),
+                'audio_channels':   stream_tags.get('audio_channels', ''),
+                'audio_language':   stream_tags.get('audio_language', ''),
+                'audio_profile':    stream_tags.get('audio_profile', ''),
+                'audio_object':     stream_tags.get('audio_object', ''),
+            }
+            strm_url = sys.argv[0] + '?' + urllib.parse.urlencode(strm_params)
+
+            dl_params = {
+                'action':      'download_fshare',
+                'title':       name,
+                'url':         item_url,
+                'fshare_url':  item_url,
+                'movie_title': effective_title,
+                'movie_year':  effective_year,
+                'imdb':        resolved_imdb_id,
+                'tmdb':        resolved_tmdb_id,
+                'season':      effective_season,
+                'episode':     effective_episode,
+                'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+                'video_resolution': stream_tags.get('video_resolution', ''),
+                'video_source':     stream_tags.get('video_source', ''),
+                'video_codec':      stream_tags.get('video_codec', ''),
+                'hdr':              stream_tags.get('hdr', ''),
+                'hdr_type':         stream_tags.get('hdr_type', ''),
+                'audio_codec':      stream_tags.get('audio_codec', ''),
+                'audio_channels':   stream_tags.get('audio_channels', ''),
+                'audio_language':   stream_tags.get('audio_language', ''),
+                'audio_profile':    stream_tags.get('audio_profile', ''),
+                'audio_object':     stream_tags.get('audio_object', ''),
+            }
+            dl_url = sys.argv[0] + '?' + urllib.parse.urlencode(dl_params)
+
+            list_item.addContextMenuItems([
+                ('💾 Tạo file .strm', f'RunPlugin({strm_url})'),
+                ('⬇️ Download về máy', f'RunPlugin({dl_url})'),
+            ])
+
             list_items.append((play_url, list_item, False))
         except Exception as e:
             xbmc.log(f"Fshare folder item error: {e}", level=xbmc.LOGWARNING)
@@ -2875,6 +2936,9 @@ def list_community(page=1):
                 list_item.setArt(art)
 
             if is_video_file:
+                # Lưu filename để skin có thể dùng property thay vì FileNameAndPath URL
+                # Skin sẽ dùng: ListItem.Property(StreamFileNameAndPath)
+                list_item.setProperty('StreamFileNameAndPath', parse_name)
                 apply_stream_props(list_item, stream_tags)
 
             if show_lookup_debug_ids:
@@ -2898,6 +2962,33 @@ def list_community(page=1):
                     'filename':    real_name if real_name and is_video_file else name,
                 }
                 play_url = sys.argv[0] + '?' + urllib.parse.urlencode(play_params)
+                
+                # Context menu: Create .strm và Download (cho tất cả file Fshare playable)
+                xbmc.log(f"list_community DEBUG: name='{name}' is_video_file={is_video_file} fshare_in_link={'fshare.vn' in link}", level=xbmc.LOGINFO)
+                if is_playable and 'fshare.vn' in link:
+                    xbmc.log(f"list_community: Adding context menu for '{name}'", level=xbmc.LOGINFO)
+                    strm_params = {
+                        'action': 'create_strm',
+                        'title': parse_name,
+                        'url': link,
+                    }
+                    strm_url = sys.argv[0] + '?' + urllib.parse.urlencode(strm_params)
+                    
+                    dl_params = {
+                        'action': 'download_fshare',
+                        'title': parse_name,
+                        'url': play_url,
+                        'fshare_url': link,
+                    }
+                    dl_url = sys.argv[0] + '?' + urllib.parse.urlencode(dl_params)
+                    
+                    list_item.addContextMenuItems([
+                        ('💾 Tạo file .strm', f'RunPlugin({strm_url})'),
+                        ('⬇️ Download về máy', f'RunPlugin({dl_url})')
+                    ])
+                else:
+                    xbmc.log(f"list_community: Context menu NOT added - is_video_file={is_video_file}, fshare_in_link={'fshare.vn' in link}", level=xbmc.LOGINFO)
+                
                 list_items.append((play_url, list_item, False))
             else:
                 if 'docs.google.com' in link:
@@ -3254,6 +3345,11 @@ def show_fshare_links(movie_title, movie_year, imdb_id=None, tmdb_id=None,
 
         apply_stream_props(list_item, stream_tags)
 
+        # Skin dùng StreamFileNameAndPath để hiện icon source/codec khi browse
+        _fname = link_info.get('title', '')
+        if _fname:
+            list_item.setProperty('StreamFileNameAndPath', _fname)
+
         list_item.setProperty('IsPlayable', 'true')
 
         # Context menu
@@ -3532,19 +3628,23 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
     is_episode = bool(season and episode)
     list_item = xbmcgui.ListItem(label=title or '', path=cdn_url)
     list_item.setProperty('IsPlayable', 'true')
+    list_item.setMimeType('video/mp4')
+    list_item.setContentLookup(False)
 
     # ------------------------------------------------------------------ #
     # Tên file gốc để skin check FileNameAndPath (atmos/dtsx/bluray/4K...)
-    # CDN URL không chứa tên file → ghép filename vào cuối CDN path (bỏ query string).
-    # Skin AH2 dùng String.Contains(ListItem.FileNameAndPath,...) và
-    # String.Contains(Player.FileNameAndPath,...) trong Image_AudioCodec,
-    # Image_RipSource, Image_OSD_AudioCodec, Image_OSD_RipSource.
+    # Dùng filename để parse stream tags, nhưng KHÔNG ghép vào CDN URL
+    # để tránh URL encoding issues với Fshare server (HTTP 400 error).
+    # Skin AH2 dùng String.Contains(ListItem.FileNameAndPath,...) để check
+    # audio codec, rip source, HDR codec (hoạt động với filename only).
+    # setContentLookup(False) ngăn chặn Kodi xử lý URL qua metadata API.
     # ------------------------------------------------------------------ #
     _filename = (filename or os.path.basename((fshare_url or '').split('?')[0])).strip()
+    
+    # Lưu filename vào property để skin có thể dùng thay vì FileNameAndPath
+    # Skin sẽ dùng: ListItem.Property(StreamFileNameAndPath)
     if _filename:
-        cdn_base = cdn_url.split('?')[0].rstrip('/')
-        fake_path = cdn_base + '/' + _filename
-        list_item.setPath(fake_path)
+        list_item.setProperty('StreamFileNameAndPath', _filename)
 
     # Parse và apply stream tags (audio codec, video codec, HDR, channels...)
     # apply_stream_props cũng gọi setHdrType() vào VideoInfoTag để
