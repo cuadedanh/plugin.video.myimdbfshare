@@ -4243,7 +4243,46 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         list_item.setArt(art)
 
     # ------------------------------------------------------------------ #
-    # 8. setResolvedUrl — trả CDN + metadata về TMDb Helper NGAY
+    # 8. Write metadata vào TMDbHelper.ListItem.* Window properties TRƯỚC
+    #    setResolvedUrl.
+    #
+    #    Kore KHÔNG đọc plot từ Player.GetItem (JSON-RPC trả về type=unknown,
+    #    plot="" với resolver flow — Kodi không merge VideoInfoTag vào playlist
+    #    item của TMDb Helper). Kore đọc plot qua XBMC.GetInfoLabels với key
+    #    TMDbHelper.ListItem.Plot — chính là các property TMDb Helper Service
+    #    Monitor ghi vào Window(10000).
+    #
+    #    Ghi đè các key này bằng metadata đã fetch (tiếng Việt nếu có) trước
+    #    setResolvedUrl để Kore luôn thấy plot dù query ở thời điểm nào.
+    # ------------------------------------------------------------------ #
+    try:
+        _win = xbmcgui.Window(10000)
+        # Các key này khớp với prop_map trong read_tmdbhelper_context()
+        # và là key Kore/Yatse đọc qua GetInfoLabels
+        if ctx_plot:
+            _win.setProperty('TMDbHelper.ListItem.Plot',             ctx_plot)
+        if ctx_title:
+            _win.setProperty('TMDbHelper.ListItem.Title',            ctx_title)
+        if ctx_poster:
+            _win.setProperty('TMDbHelper.ListItem.thumb',            ctx_poster)
+        if ctx_fanart:
+            _win.setProperty('TMDbHelper.ListItem.fanart',           ctx_fanart)
+        if ctx_rating:
+            _win.setProperty('TMDbHelper.ListItem.Rating',           str(ctx_rating))
+        if tmdb_id:
+            _win.setProperty('TMDbHelper.ListItem.UniqueId.tmdb',    str(tmdb_id))
+        if imdb_id:
+            _win.setProperty('TMDbHelper.ListItem.UniqueId.imdb',    str(imdb_id))
+        xbmc.log(
+            f"auto_play_fshare: pre-push TMDbHelper.ListItem.* OK "
+            f"plot={bool(ctx_plot)} title={bool(ctx_title)}",
+            level=xbmc.LOGINFO
+        )
+    except Exception as _we:
+        xbmc.log(f"auto_play_fshare: pre-push TMDbHelper.ListItem error: {_we}", level=xbmc.LOGWARNING)
+
+    # ------------------------------------------------------------------ #
+    # 8b. setResolvedUrl — trả CDN + metadata về TMDb Helper NGAY
     # ------------------------------------------------------------------ #
     xbmcplugin.setResolvedUrl(handle, True, listitem=list_item)
 
@@ -4254,7 +4293,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     #
     #    updateInfoTag được gọi 2 lần:
     #      - Lần 1: ngay khi player bắt đầu phát (skin Kodi đọc được)
-    #      - Lần 2: sau thêm 3 giây (Kore / web interface thường query muộn hơn)
+    #      - Lần 2: sau thêm 3 giây (phòng trường hợp Kore query muộn hơn bình thường)
     #    Dùng Monitor.waitForAbort() thay vì polling xbmc.sleep() để tránh
     #    giữ thread khi Kodi đang shutdown.
     # ------------------------------------------------------------------ #
@@ -4271,17 +4310,9 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             _waited += 100
 
         if player.isPlaying():
-            # Lần 1: update ngay — skin Kodi đọc được luôn
+            # Update skin Kodi — đọc từ player internal state, không từ Window properties
             player.updateInfoTag(list_item)
-            xbmc.log("auto_play_fshare: updateInfoTag #1 OK", level=xbmc.LOGINFO)
-
-            # Lần 2: đợi thêm 3 giây rồi update lại — Kore/web query muộn hơn
-            # JSON-RPC Player.GetItem sẽ trả về metadata mới nhất sau lần này
-            if not monitor.abortRequested():
-                monitor.waitForAbort(3)
-            if player.isPlaying() and not monitor.abortRequested():
-                player.updateInfoTag(list_item)
-                xbmc.log("auto_play_fshare: updateInfoTag #2 OK (for Kore/web)", level=xbmc.LOGINFO)
+            xbmc.log("auto_play_fshare: updateInfoTag OK", level=xbmc.LOGINFO)
         else:
             xbmc.log("auto_play_fshare: updateInfoTag skipped — player not started within 10s", level=xbmc.LOGWARNING)
 
