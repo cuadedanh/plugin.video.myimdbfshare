@@ -140,18 +140,18 @@ def save_play_history(title='', year='', filename='', fshare_url='',
         elif filename:
             history = [h for h in history if h.get('filename', '') != filename]
 
-        # Build subtitle: "filename · size · thời gian" — nối vào đầu plot để skin hiện được
+        # Build subtitle: "filename · size" — KHÔNG nhúng thời gian vào đây,
+        # thời gian sẽ được tính lại động mỗi lần hiển thị từ field 'time'.
         _subtitle_parts = []
         if filename:
             _subtitle_parts.append(filename)
         if size_bytes and int(size_bytes) > 0:
             _subtitle_parts.append(_format_size(int(size_bytes)))
-        _subtitle_parts.append(_format_history_time(int(time.time())))
         _subtitle = ' · '.join(p for p in _subtitle_parts if p)
 
-        # full_plot = subtitle + dòng trắng + plot (nếu có)
+        # full_plot = subtitle + dòng trắng + plot gốc (nếu có)
         if plot and plot.strip():
-            full_plot = f"{_subtitle}\n\n{plot.strip()}"
+            full_plot = f"{_subtitle}\n\n{plot.strip()}" if _subtitle else plot.strip()
         else:
             full_plot = _subtitle
 
@@ -230,18 +230,25 @@ def list_play_history():
         else:
             label = filename or '(không rõ)'
 
-        # Fallback plot cho entry cũ chưa có trường plot
+        # Luôn tính lại chuỗi thời gian từ ts tại thời điểm hiển thị
+        # (tránh "Hôm nay" bị đóng băng từ lúc save).
+        time_str = _format_history_time(ts) if ts else ''
+
         if not plot_text:
+            # Entry cũ chưa có plot — build từ đầu
             parts = []
             if filename:
                 parts.append(filename)
             size_str = _format_size(size_bytes)
             if size_str:
                 parts.append(size_str)
-            time_str = _format_history_time(ts)
             if time_str:
                 parts.append(time_str)
             plot_text = ' · '.join(parts)
+        else:
+            # Entry mới đã có plot — ghép thời gian động vào đầu
+            if time_str:
+                plot_text = f"{time_str}\n\n{plot_text}"
 
         li = xbmcgui.ListItem(label=label)
         info_tag = li.getVideoInfoTag()
@@ -3921,27 +3928,31 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
 
 def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
                      season=None, episode=None, tvshowtitle=None,
-                     include=None, exclude=None):
+                     include=None, exclude=None, size_gb=None):
     """
     TMDb Helper Resolver Player — tự động search Fshare và play link tốt nhất.
 
     Khác search_fshare (hiện danh sách để user chọn), hàm này:
       1. Search Fshare lấy toàn bộ link
       2. Apply include/exclude filter (từ players.json của TMDb Helper)
-      3. Sort: file lớn nhất lên đầu (chất lượng cao nhất)
-      4. Chọn link đầu tiên → play thẳng qua play_fshare_direct()
-      5. Metadata: đọc từ TMDb Helper Window context (đã fetch sẵn, không tốn API)
+      3. Apply size_gb filter (lọc theo khoảng dung lượng GB)
+      4. Sort: file lớn nhất lên đầu (chất lượng cao nhất)
+      5. Chọn link đầu tiên → play thẳng qua play_fshare_direct()
+      6. Metadata: đọc từ TMDb Helper Window context (đã fetch sẵn, không tốn API)
 
     players.json mẫu:
       Movie:   "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare
                 &title={originaltitle}&year={year}&imdb={imdb}&tmdb={tmdb}
-                &include=1080p|2160p&exclude=hdcam|cam"
+                &include=1080p,2160p&exclude=hdcam,cam&size_gb=5-25"
       Episode: "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare
                 &title={showname}&year={year}&imdb={imdb}&tmdb={tmdb}
-                &season={season}&episode={episode}"
+                &season={season}&episode={episode}&size_gb=0-8"
 
-    include : 'A|B;C|D'  → (A OR B) AND (C OR D) — phân cách nhóm bằng ';', OR bằng '|'
-    exclude : 'X|Y|Z'    → loại file chứa bất kỳ keyword X, Y, hoặc Z
+    include  : 'A,B;C,D'  → (A OR B) AND (C OR D) — phân cách nhóm bằng ';', OR bằng ','
+    exclude  : 'X,Y,Z'    → loại file chứa bất kỳ keyword X, Y, hoặc Z
+    size_gb  : 'min-max'  → chỉ giữ file trong khoảng [min, max] GB
+                            dùng 0 để bỏ qua một đầu: '0-20' (≤20 GB), '10-0' (≥10 GB)
+                            không truyền hoặc '0-0' = không lọc size
     """
     handle = int(sys.argv[1])
     is_episode = bool(season and episode)
@@ -3950,7 +3961,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         f"[auto_play_fshare] title={title!r} year={year!r} "
         f"imdb={imdb_id!r} tmdb={tmdb_id!r} "
         f"season={season!r} episode={episode!r} "
-        f"include={include!r} exclude={exclude!r}",
+        f"include={include!r} exclude={exclude!r} size_gb={size_gb!r}",
         level=xbmc.LOGINFO
     )
 
@@ -4088,7 +4099,50 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             links = candidates if candidates else links
 
     # ------------------------------------------------------------------ #
-    # 3. Sort: file lớn nhất lên đầu (proxy cho chất lượng cao nhất)
+    # 3. Filter size_gb: chỉ giữ file trong khoảng [min_gb, max_gb]
+    #    Cú pháp: 'min-max' tính bằng GB, dùng 0 để bỏ qua một đầu.
+    #    Ví dụ: '5-25' (5–25 GB), '10-0' (≥10 GB), '0-20' (≤20 GB)
+    # ------------------------------------------------------------------ #
+    _size_min_gb = 0.0
+    _size_max_gb = 0.0
+    if size_gb:
+        try:
+            _parts = str(size_gb).split('-')
+            if len(_parts) == 2:
+                _size_min_gb = float(_parts[0]) if _parts[0].strip() else 0.0
+                _size_max_gb = float(_parts[1]) if _parts[1].strip() else 0.0
+        except (ValueError, TypeError):
+            xbmc.log(f"auto_play_fshare: invalid size_gb={size_gb!r}, skipping size filter", level=xbmc.LOGWARNING)
+            _size_min_gb = _size_max_gb = 0.0
+
+    if _size_min_gb > 0 or _size_max_gb > 0:
+        _bytes_per_gb = 1024 ** 3
+        def _in_size_range(link_info):
+            sz_gb = link_info.get('size', 0) / _bytes_per_gb
+            if _size_min_gb > 0 and sz_gb < _size_min_gb:
+                return False
+            if _size_max_gb > 0 and sz_gb > _size_max_gb:
+                return False
+            return True
+
+        size_filtered = [l for l in links if _in_size_range(l)]
+        if size_filtered:
+            xbmc.log(
+                f"auto_play_fshare: size_gb={size_gb!r} → "
+                f"{len(size_filtered)}/{len(links)} file(s) trong khoảng",
+                level=xbmc.LOGINFO
+            )
+            links = size_filtered
+        else:
+            xbmc.log(
+                f"auto_play_fshare: size_gb={size_gb!r} không khớp file nào — bỏ filter size",
+                level=xbmc.LOGWARNING
+            )
+            notify(f"Không có file trong khoảng {size_gb} GB — bỏ qua filter size", duration=3500, sound=False)
+            # Không return, giữ nguyên links để vẫn play được
+
+    # ------------------------------------------------------------------ #
+    # 4. Sort: file lớn nhất lên đầu (proxy cho chất lượng cao nhất)
     # ------------------------------------------------------------------ #
     links.sort(key=lambda x: x.get('size', 0), reverse=True)
     best = links[0]
@@ -4103,7 +4157,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     )
 
     if get_autoplay_notify():
-        # Hiện: size · tier N: <include của tier đã matched> · excl: exclude · N ứng viên
+        # Hiện: size · tier N: <include của tier đã matched> · size range · excl: exclude · N ứng viên
         parts = [f'{best_size_gb:.2f} GB']
         if include_tiers and matched_tier > 0:
             # Chỉ lấy groups của tier đã matched (index = matched_tier - 1)
@@ -4112,6 +4166,8 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             # Chỉ hiện nhãn TN nếu có nhiều hơn 1 tier (để biết đã fallback)
             tier_label = f'T{matched_tier}: ' if len(include_tiers) > 1 else ''
             parts.append(f'{tier_label}{include_str}')
+        if (_size_min_gb > 0 or _size_max_gb > 0) and size_gb:
+            parts.append(f'size: {size_gb} GB')
         if exclude_list:
             parts.append(f'excl: {",".join(exclude_list)}')
         parts.append(f'{len(links)} ứng viên')
@@ -4695,9 +4751,12 @@ def router(paramstring):
             # TMDb Helper Resolver Player — search Fshare và play link tốt nhất tự động.
             # Config players.json:
             #   Movie:   action=auto_play_fshare&title={originaltitle}&year={year}
-            #            &imdb={imdb}&tmdb={tmdb}&include=1080p|2160p&exclude=hdcam|cam
+            #            &imdb={imdb}&tmdb={tmdb}&include=1080p,2160p&exclude=hdcam,cam
+            #            &size_gb=5-25
             #   Episode: action=auto_play_fshare&title={showname}&year={year}
             #            &imdb={imdb}&tmdb={tmdb}&season={season}&episode={episode}
+            #            &size_gb=0-8
+            #   size_gb: 'min-max' GB, dùng 0 để bỏ qua một đầu (vd: '10-0' = ≥10 GB)
             movie_title = params.get('title', '')
             if movie_title:
                 auto_play_fshare(
@@ -4710,6 +4769,7 @@ def router(paramstring):
                     tvshowtitle = params.get('tvshowtitle') or params.get('title', '') or None,
                     include     = params.get('include') or None,
                     exclude     = params.get('exclude') or None,
+                    size_gb     = params.get('size_gb') or None,
                 )
             else:
                 xbmc.log("auto_play_fshare: missing title param", level=xbmc.LOGWARNING)
