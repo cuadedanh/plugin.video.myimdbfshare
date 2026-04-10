@@ -515,20 +515,15 @@ def get_fetch_ids_on_play():
 
 
 def get_effective_source_for_play():
-    """Tra ve nguon metadata hieu qua khi play.
-    Neu 'metadata khi duyet' dang tat ('none'), van ep sang 'tmdb' de Trakt
-    scrobble va skin hien dung thong tin — play luon can ID.
-    Thu tu uu tien: tmdb (co key) > omdb (co key) > tmdb (fallback khong key).
+    """Nguon metadata khi play — hoàn toàn độc lập với 'metadata khi duyệt'.
+    Play luôn cố tra nếu thiếu ID, bất kể browse đang bật hay tắt.
+    Ưu tiên: tmdb (có key) > omdb (có key) > tmdb (fallback thử dù chưa chắc có key).
     """
-    actual = get_metadata_source()
-    if actual != 'none':
-        return actual
-    # Browse tat — chon nguon tot nhat con dung duoc khi play
     if get_tmdb_api_key():
         return 'tmdb'
     if get_omdb_api_key():
         return 'omdb'
-    return 'tmdb'  # fallback: thu TMDb du chua chac co key
+    return 'tmdb'
 
 
 def cycle_metadata_source():
@@ -677,13 +672,12 @@ def settings_menu():
         sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'toggle_fetch_ids_on_play'}),
         _make_setting_item(
             f'[Tra metadata & ID khi play: {ids_on_play_state}]',
-            'Kiểm soát việc tra thông tin phim ngay trước khi phát video.\n\n'
-            'Khi Bật: Nếu link chưa có TMDb ID hoặc IMDb ID (ví dụ từ tìm kiếm thủ công), '
-            'addon sẽ tự tra API để lấy đủ thông tin trước khi phát.\n'
-            'Lợi ích: Trakt scrobble hoạt động đúng, skin hiện metadata chính xác.\n\n'
-            'Khi Tắt: Chỉ dùng thông tin đã có sẵn từ lúc duyệt danh sách.\n\n'
-            'Hoạt động độc lập với "Metadata khi duyệt" — kể cả khi duyệt tắt, '
-            'play vẫn có thể tra nếu mục này đang Bật.'
+            'Kiểm soát việc tra thông tin phim sau khi bấm play (chạy nền, không lag).\n\n'
+            'Khi Bật: Nếu link chưa có TMDb/IMDb ID, addon tự tra API để lấy đủ thông tin.\n'
+            'Nguồn: TMDb (có key) → OMDb → TMDb /find — hoàn toàn độc lập với\n'
+            '"Metadata khi duyệt". Kể cả khi duyệt đang Tắt, play vẫn tra đầy đủ.\n'
+            'Lợi ích: Trakt scrobble đúng, skin hiển thị poster/plot chính xác.\n\n'
+            'Khi Tắt: Chỉ dùng thông tin đã có từ lúc duyệt danh sách.'
         )
     )
 
@@ -1018,7 +1012,19 @@ def lookup_tmdb_episode(api_key, tvshowtitle, season, episode, force_source=None
     show_name    = show.get('name', tvshowtitle)
     show_year    = (show.get('first_air_date', '') or '')[:4]
 
-    # Request 2: lay episode plot + still.
+    # Request 2: external_ids để lấy imdb_id của show
+    show_imdb_id = ''
+    try:
+        ext_resp = requests.get(
+            f'https://api.themoviedb.org/3/tv/{show_id}/external_ids',
+            params={'api_key': api_key}, timeout=5
+        )
+        if ext_resp.status_code == 200:
+            show_imdb_id = ext_resp.json().get('imdb_id', '') or ''
+    except Exception:
+        pass
+
+    # Request 3: lay episode plot + still.
     # Dieu kien: effective_source == 'tmdb' (du la tu setting hay force_source khi play).
     # Truoc day chi doc get_metadata_source() truc tiep → bi block khi browse='none'.
     effective_source = force_source or get_metadata_source()
@@ -1057,7 +1063,7 @@ def lookup_tmdb_episode(api_key, tvshowtitle, season, episode, force_source=None
         'season':       str(season),
         'episode':      str(episode),
         'tmdb_id':      str(show_id),
-        'imdb_id':      '',
+        'imdb_id':      show_imdb_id,
         'plot':         ep_plot,
         'rating':       str(show.get('vote_average', '') or ''),
         'poster':       f"{TMDB_IMAGE_BASE}w500{show_poster}" if show_poster else '',
@@ -1142,6 +1148,18 @@ def fetch_tmdb_details_by_id(tmdb_id, season=None, episode=None):
             show_poster = show.get('poster_path') or ''
             show_fanart = show.get('backdrop_path') or ''
 
+            # external_ids để lấy imdb_id của show
+            show_imdb_id = ''
+            try:
+                ext_resp = requests.get(
+                    f'https://api.themoviedb.org/3/tv/{tmdb_id}/external_ids',
+                    params={'api_key': api_key}, timeout=5
+                )
+                if ext_resp.status_code == 200:
+                    show_imdb_id = ext_resp.json().get('imdb_id', '') or ''
+            except Exception:
+                pass
+
             # Request 2: episode details (plot, still)
             ep_plot  = ''
             ep_still = ''
@@ -1174,7 +1192,7 @@ def fetch_tmdb_details_by_id(tmdb_id, season=None, episode=None):
                 'season':      str(season),
                 'episode':     str(episode),
                 'tmdb_id':     str(tmdb_id),
-                'imdb_id':     '',
+                'imdb_id':     show_imdb_id,
                 'plot':        ep_plot,
                 'rating':      str(show.get('vote_average', '') or ''),
                 'poster':      f"{TMDB_IMAGE_BASE}w500{show_poster}"  if show_poster else '',
@@ -1187,14 +1205,62 @@ def fetch_tmdb_details_by_id(tmdb_id, season=None, episode=None):
         return {}
 
 
+def resolve_imdb_to_tmdb_meta(imdb_id, season=None, episode=None):
+    """Dùng imdb_id để tìm tmdb_id qua TMDb /find, rồi fetch đầy đủ metadata.
+    Dùng khi TMDb search theo title thất bại nhưng OMDb đã lấy được imdb_id.
+    Trả về dict đầy đủ (plot/poster/fanart) hoặc {} nếu thất bại.
+    """
+    if not imdb_id:
+        return {}
+    api_key = get_tmdb_api_key()
+    if not api_key:
+        return {}
+    try:
+        resp = requests.get(
+            f'https://api.themoviedb.org/3/find/{imdb_id}',
+            params={'api_key': api_key, 'external_source': 'imdb_id'},
+            timeout=5
+        )
+        resp.raise_for_status()
+        found = resp.json()
+
+        # Thử movie trước, rồi tv
+        movie_results = found.get('movie_results', [])
+        tv_results    = found.get('tv_results', [])
+
+        if movie_results:
+            tmdb_id = str(movie_results[0].get('id', ''))
+        elif tv_results:
+            tmdb_id = str(tv_results[0].get('id', ''))
+        else:
+            xbmc.log(f"resolve_imdb_to_tmdb_meta: {imdb_id} not found in TMDb /find", level=xbmc.LOGWARNING)
+            return {}
+
+        xbmc.log(f"resolve_imdb_to_tmdb_meta: {imdb_id} → tmdb_id={tmdb_id}", level=xbmc.LOGINFO)
+        meta = fetch_tmdb_details_by_id(tmdb_id=tmdb_id, season=season, episode=episode)
+        if meta:
+            # Đảm bảo imdb_id gốc luôn được giữ lại (fetch_by_id có thể không trả về)
+            meta['imdb_id'] = meta.get('imdb_id') or imdb_id
+        return meta
+    except Exception as e:
+        xbmc.log(f"resolve_imdb_to_tmdb_meta({imdb_id}): {e}", level=xbmc.LOGWARNING)
+        return {}
+
+
 def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, episode=None,
                          force_source=None):
-    """Tra cuu ID tu TMDb hoac OMDb tuy theo setting.
-    - TMDb Helper player: truyen san tmdb/imdb qua URL -> khong goi ham nay.
-    - List cong dong / search manual: chua co ID -> goi ham nay.
-      Neu OMDb chi tra duoc imdb_id, tu dong convert sang tmdb_id qua Trakt API
-      de skin ah2 / TMDb Helper hien duoc poster/plot dung.
-    force_source: 'tmdb' | 'omdb' | None (dung setting)
+    """Tra cứu ID + metadata đầy đủ theo chuỗi fallback:
+
+    source='tmdb':
+      1. TMDb search theo title → tmdb_id + plot + poster ✓
+      2. Thất bại → OMDb search → imdb_id → TMDb /find → tmdb_id → fetch đầy đủ ✓
+
+    source='omdb':
+      1. OMDb search → imdb_id → TMDb /find → tmdb_id → fetch đầy đủ ✓
+
+    source='none': return {} ngay (chỉ bị block khi browse gọi trực tiếp không qua force_source)
+
+    force_source bỏ qua metadata_source của browse — dùng khi gọi từ play context.
     """
     source = force_source or get_metadata_source()
     if source == 'none':
@@ -1210,6 +1276,7 @@ def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, e
 
     data = {}
 
+    # ── Bước 1: TMDb search theo title ───────────────────────────────────
     if source == 'tmdb':
         api_key = get_tmdb_api_key()
         if api_key:
@@ -1222,21 +1289,49 @@ def lookup_tmdb_metadata(title=None, year=None, tvshowtitle=None, season=None, e
             except Exception as e:
                 xbmc.log(f"TMDb lookup error: {e}", level=xbmc.LOGWARNING)
 
+    # ── Bước 2: OMDb → imdb_id ───────────────────────────────────────────
+    # Chạy khi: source='omdb' HOẶC source='tmdb' nhưng TMDb thất bại
     if not data:
         try:
-            data = lookup_fallback_metadata(
+            omdb_data = lookup_fallback_metadata(
                 title=title,
                 year=year,
                 tvshowtitle=tvshowtitle,
                 season=season,
                 episode=episode,
             )
+            if omdb_data and omdb_data.get('imdb_id'):
+                # ── Bước 3: imdb_id → TMDb /find → fetch đầy đủ ─────────
+                # OMDb chỉ trả imdb_id, plot/poster rỗng → cần thêm bước này
+                # để có metadata đầy đủ cho skin hiển thị
+                if get_tmdb_api_key():
+                    resolved = resolve_imdb_to_tmdb_meta(
+                        imdb_id = omdb_data['imdb_id'],
+                        season  = season,
+                        episode = episode,
+                    )
+                    if resolved:
+                        data = resolved
+                        xbmc.log(
+                            f"lookup_tmdb_metadata: OMDb→TMDb/find resolved "
+                            f"imdb={omdb_data['imdb_id']} tmdb={resolved.get('tmdb_id')} "
+                            f"plot={bool(resolved.get('plot'))}",
+                            level=xbmc.LOGINFO
+                        )
+                    else:
+                        # TMDb /find thất bại — vẫn dùng imdb_id từ OMDb cho scrobble
+                        data = omdb_data
+                        xbmc.log(
+                            f"lookup_tmdb_metadata: TMDb/find failed, using OMDb imdb_id only "
+                            f"imdb={omdb_data['imdb_id']}",
+                            level=xbmc.LOGWARNING
+                        )
+                else:
+                    # Không có TMDb key — dùng imdb_id từ OMDb, đủ cho Trakt scrobble
+                    data = omdb_data
         except Exception as e:
-            xbmc.log(f"OMDb fallback lookup error: {e}", level=xbmc.LOGWARNING)
+            xbmc.log(f"OMDb/TMDb-find fallback error: {e}", level=xbmc.LOGWARNING)
             data = {}
-
-    # imdb_id (OMDb) hoac tmdb_id (TMDb) la du cho Trakt scrobble qua script.trakt.ids.
-    # Khong can convert qua Trakt API.
 
     if data:
         cache[cache_key] = data
@@ -1592,6 +1687,10 @@ def parse_media_identity_from_filename(filename, fallback_title=''):
 
     if season_episode_match:
         title_part = name_no_ext[:season_episode_match.start()]
+        # Năm đứng trước SxxExx (vd "Wild China 2008 S01E06") → strip khỏi title
+        # để tvshowtitle = "Wild China" thay vì "Wild China 2008" (TMDb không tìm được)
+        if year_match and year_match.start() < season_episode_match.start():
+            title_part = name_no_ext[:year_match.start()]
     elif year_match:
         title_part = name_no_ext[:year_match.start()]
     else:
@@ -1656,6 +1755,10 @@ def make_safe_media_name(title, movie_info=None):
             'VIE': 'ViE', 'ENG': 'ENG', 'VIET': 'ViE', 'VIETSUB': 'VieSub',
             '10BIT': '10bit', '8BIT': '8bit',
         }
+        # Token đứng một mình không có nghĩa kỹ thuật — bỏ qua để tránh lặp
+        # vd: "WEB-DL" split theo '-' ra "WEB" + "DL" → "WEB" → "WEB-DL" (đúng),
+        # còn "DL" đứng riêng không map được → giữ nguyên "DL" → lặp thành "WEB-DL.DL"
+        _skip_standalone = {'DL', 'HD', 'BD', 'BR', 'MA'}
         normalized = []
         seen = set()
         for token in tokens:
@@ -1663,6 +1766,8 @@ def make_safe_media_name(title, movie_info=None):
             if not cleaned:
                 continue
             upper = cleaned.upper()
+            if upper in _skip_standalone:
+                continue
             normalized_token = normalize_map.get(upper, cleaned)
             if normalized_token in ['Dolby', 'Vision']:
                 continue
@@ -1739,6 +1844,16 @@ def make_safe_media_name(title, movie_info=None):
     tech_tokens = normalize_tech_tokens(info_tech_tokens)
     if not tech_tokens:
         tech_tokens = normalize_tech_tokens(re.split(r'[.\s\-_]+', media.get('tech_source', '')))
+
+    # Loại các token trùng với identity ra khỏi tech_tokens để tránh lặp trong tên file:
+    # - year (vd "1997" từ tech_source trùng với "(1997)" trong identity_tokens)
+    # - SxxExx (vd "S01E01" từ tech_source trùng với SxxExx trong identity_tokens)
+    # - tên release group thường là token cuối không có nghĩa kỹ thuật (giữ lại)
+    _se_pattern = re.compile(r'^S\d{2}E\d{2}$', re.IGNORECASE)
+    tech_tokens = [
+        t for t in tech_tokens
+        if t != year and not _se_pattern.match(t)
+    ]
 
     identity_tokens = [base_title] if base_title else []
     if is_episode:
@@ -1843,6 +1958,25 @@ def search_fshare_manual_keyboard():
 def create_strm_file(title, url, movie_info=None):
     safe_title = make_safe_media_name(title, movie_info)
 
+    # Chuyển link fshare thô → plugin:// URL để Kodi play được qua addon
+    # (link fshare thô không play trực tiếp được, cần đi qua play_fshare_direct)
+    strm_content = url
+    if url and 'fshare.vn' in url and not url.startswith('plugin://'):
+        info = movie_info or {}
+        play_params = {
+            'action':      'play_fshare_direct',
+            'url':         url,
+            'title':       info.get('title', ''),
+            'year':        info.get('year', ''),
+            'imdb':        info.get('imdb_id', ''),
+            'tmdb':        info.get('tmdb_id', ''),
+            'season':      info.get('season', ''),
+            'episode':     info.get('episode', ''),
+            'tvshowtitle': info.get('tvshowtitle', ''),
+            'filename':    title,
+        }
+        strm_content = f"plugin://plugin.video.myimdbfshare/?{urllib.parse.urlencode(play_params)}"
+
     dialog = xbmcgui.Dialog()
     saved_dir = load_strm_dir()
 
@@ -1870,9 +2004,9 @@ def create_strm_file(title, url, movie_info=None):
 
     try:
         strm_file = xbmcvfs.File(strm_path, 'w')
-        strm_file.write(url)
+        strm_file.write(strm_content)
         strm_file.close()
-        xbmc.log(f"Created STRM: {strm_path}", level=xbmc.LOGINFO)
+        xbmc.log(f"Created STRM: {strm_path} → {strm_content[:80]}", level=xbmc.LOGINFO)
         scan_path_into_library(strm_path)
         xbmcgui.Dialog().ok("Thành công", f"Đã tạo và thêm vào library:\n{safe_title}.strm")
     except Exception as e:
@@ -2531,7 +2665,7 @@ def fetch_fshare_folder_items(folder_url, page_index=0, limit=100):
 def browse_fshare_folder(folder_url, page_index=0, folder_name=''):
     folder_name = folder_name or 'Folder Fshare'
     xbmcplugin.setPluginCategory(addon_handle, folder_name)
-    xbmcplugin.setContent(addon_handle, 'files')
+    xbmcplugin.setContent(addon_handle, 'episodes')
 
     try:
         page_index = max(0, int(page_index))
@@ -3124,9 +3258,26 @@ def list_community(page=1):
                 if is_playable and 'fshare.vn' in link:
                     xbmc.log(f"list_community: Adding context menu for '{name}'", level=xbmc.LOGINFO)
                     strm_params = {
-                        'action': 'create_strm',
-                        'title': parse_name,
-                        'url': link,
+                        'action':      'create_strm',
+                        'title':       parse_name,
+                        'url':         link,
+                        'movie_title': effective_title,
+                        'movie_year':  effective_year,
+                        'imdb':        resolved_imdb_id,
+                        'tmdb':        resolved_tmdb_id,
+                        'season':      effective_season,
+                        'episode':     effective_episode,
+                        'tvshowtitle': effective_tvshowtitle if is_episode_item else '',
+                        'video_resolution': stream_tags.get('video_resolution', ''),
+                        'video_source':     stream_tags.get('video_source', ''),
+                        'video_codec':      stream_tags.get('video_codec', ''),
+                        'hdr':              stream_tags.get('hdr', ''),
+                        'hdr_type':         stream_tags.get('hdr_type', ''),
+                        'audio_codec':      stream_tags.get('audio_codec', ''),
+                        'audio_channels':   stream_tags.get('audio_channels', ''),
+                        'audio_language':   stream_tags.get('audio_language', ''),
+                        'audio_profile':    stream_tags.get('audio_profile', ''),
+                        'audio_object':     stream_tags.get('audio_object', ''),
                     }
                     strm_url = sys.argv[0] + '?' + urllib.parse.urlencode(strm_params)
                     
@@ -3735,34 +3886,32 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
     xbmc.log(f"play_fshare_direct: resolved {fshare_url[:60]} → CDN OK", level=xbmc.LOGINFO)
 
     # ------------------------------------------------------------------ #
-    # 3. Tra metadata đầy đủ trước setResolvedUrl để Kore và các client
-    #    JSON-RPC thấy plot/poster/fanart ngay khi play bắt đầu.
+    # 3. Tra metadata — 2 chiến lược tùy trường hợp:
     #
-    #    Ưu tiên:
-    #    a) Đã có tmdb_id → fetch_tmdb_details_by_id (1 call trực tiếp, nhanh)
-    #    b) Chưa có ID + fetch_ids_on_play=True → lookup_tmdb_metadata (search)
+    #    A) Không có ID (browse tắt): tra BLOCKING trước setResolvedUrl.
+    #       Lý do: Trakt đọc script.trakt.ids tại OnPlay event (ngay sau
+    #       setResolvedUrl) — nếu lúc đó chỉ có title-based thì Trakt
+    #       không scrobble được. Skin cũng cần metadata trong ListItem
+    #       truyền vào setResolvedUrl để hiển thị ngay, vì updateInfoTag
+    #       sau khi skin đã render không phải lúc nào cũng được đọc lại.
+    #       Trade-off: lag ~1-3s khi bấm play, nhưng scrobble + metadata đúng.
+    #
+    #    B) Đã có tmdb_id (browse đã tra): setResolvedUrl ngay, sau đó
+    #       background thread fetch plot/poster/fanart đầy đủ rồi updateInfoTag.
+    #       ID đã có sẵn → Trakt scrobble đúng ngay, chỉ thiếu plot/poster lúc đầu.
     # ------------------------------------------------------------------ #
-    meta = {}
-    if tmdb_id:
-        try:
-            meta = fetch_tmdb_details_by_id(
-                tmdb_id = tmdb_id,
-                season  = season,
-                episode = episode,
-            )
-            if meta:
-                imdb_id = imdb_id or meta.get('imdb_id', '')
-                title   = title   or meta.get('title', title)
-                year    = year    or meta.get('year',  year)
-                xbmc.log(
-                    f"play_fshare_direct: fetch_by_id tmdb={tmdb_id} "
-                    f"plot={bool(meta.get('plot'))} poster={bool(meta.get('poster'))}",
-                    level=xbmc.LOGINFO
-                )
-        except Exception as e:
-            xbmc.log(f"play_fshare_direct: fetch_by_id error: {e}", level=xbmc.LOGWARNING)
+    import threading
 
-    if not meta and get_fetch_ids_on_play() and not imdb_id and not tmdb_id and title:
+    meta = {}
+    needs_blocking_fetch = (
+        get_fetch_ids_on_play()
+        and not imdb_id
+        and not tmdb_id
+        and (title or tvshowtitle)
+    )
+
+    if needs_blocking_fetch:
+        # ── Luồng A: blocking ────────────────────────────────────────────
         try:
             force_source = get_effective_source_for_play()
             meta = lookup_tmdb_metadata(
@@ -3779,56 +3928,27 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
                 title   = title   or meta.get('title',   title)
                 year    = year    or meta.get('year',    year)
                 xbmc.log(
-                    f"play_fshare_direct: search meta — "
+                    f"play_fshare_direct: blocking fetch — "
                     f"imdb={imdb_id} tmdb={tmdb_id} "
                     f"plot={bool(meta.get('plot'))} poster={bool(meta.get('poster'))}",
                     level=xbmc.LOGINFO
                 )
         except Exception as e:
-            xbmc.log(f"play_fshare_direct: metadata fetch error: {e}", level=xbmc.LOGWARNING)
+            xbmc.log(f"play_fshare_direct: blocking fetch error: {e}", level=xbmc.LOGWARNING)
 
     # ------------------------------------------------------------------ #
-    # 4. Set script.trakt.ids vào Window(10000) cho Trakt scrobble
-    # ------------------------------------------------------------------ #
-    if imdb_id or tmdb_id:
-        trakt_ids = {}
-        if imdb_id: trakt_ids['imdb'] = str(imdb_id)
-        if tmdb_id: trakt_ids['tmdb'] = str(tmdb_id)
-        xbmcgui.Window(10000).setProperty('script.trakt.ids', json.dumps(trakt_ids))
-        xbmc.log(f"play_fshare_direct: set script.trakt.ids={json.dumps(trakt_ids)}", level=xbmc.LOGINFO)
-
-    # ------------------------------------------------------------------ #
-    # 5. Build ListItem đầy đủ metadata (Hướng 2)
-    #    Một số skin và Kodi build đọc metadata từ resolved ListItem.
-    #    Khi browse đã tra đầy đủ: meta={} nhưng imdb/tmdb_id đã có trong params.
-    #    Khi browse tắt: meta chứa plot/poster/fanart vừa tra ở bước 3.
+    # 4. Build ListItem với toàn bộ thông tin có sẵn (kể cả từ blocking fetch)
     # ------------------------------------------------------------------ #
     is_episode = bool(season and episode)
     list_item = xbmcgui.ListItem(label=title or '', path=cdn_url)
     list_item.setProperty('IsPlayable', 'true')
     list_item.setMimeType('video/mp4')
 
-    # ------------------------------------------------------------------ #
-    # Tên file gốc để skin check FileNameAndPath (atmos/dtsx/bluray/4K...)
-    # Dùng filename để parse stream tags, nhưng KHÔNG ghép vào CDN URL
-    # để tránh URL encoding issues với Fshare server (HTTP 400 error).
-    # ------------------------------------------------------------------ #
     _filename = (filename or os.path.basename((fshare_url or '').split('?')[0])).strip()
-    
-    # Lưu filename vào property để skin có thể dùng thay vì FileNameAndPath
-    # Skin sẽ dùng: ListItem.Property(StreamFileNameAndPath)
     if _filename:
         list_item.setProperty('StreamFileNameAndPath', _filename)
-
-    # Parse và apply stream tags (audio codec, video codec, HDR, channels...)
-    # apply_stream_props cũng gọi setHdrType() vào VideoInfoTag để
-    # Image_HDR_Codec / Image_OSD_HDR_Codec hoạt động đúng.
-    if _filename:
         stream_tags = parse_stream_tags_from_filename(_filename)
         apply_stream_props(list_item, stream_tags)
-
-    info_tag = list_item.getVideoInfoTag()
-    info_tag.setTitle(title or '')
 
     plot   = meta.get('plot', '')
     poster = meta.get('poster', '')
@@ -3836,13 +3956,12 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
     thumb  = meta.get('thumb', '') or poster
     rating = meta.get('rating', '')
 
-    if plot:
-        info_tag.setPlot(plot)
+    info_tag = list_item.getVideoInfoTag()
+    info_tag.setTitle(title or '')
+    if plot:   info_tag.setPlot(plot)
     if rating:
-        try:
-            info_tag.setRating(float(rating))
-        except (ValueError, TypeError):
-            pass
+        try: info_tag.setRating(float(rating))
+        except (ValueError, TypeError): pass
     if year and str(year).isdigit():
         info_tag.setYear(int(year))
 
@@ -3870,60 +3989,184 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
     if poster: art['poster'] = poster
     if thumb:  art['thumb']  = thumb
     if fanart: art['fanart'] = fanart
-    if art:
-        list_item.setArt(art)
+    if art:    list_item.setArt(art)
+
+    # Set script.trakt.ids — lúc này imdb_id/tmdb_id đã có (blocking fetch xong)
+    # hoặc đến từ browse params. Trakt sẽ đọc đúng tại OnPlay event.
+    if imdb_id or tmdb_id:
+        trakt_ids = {}
+        if imdb_id: trakt_ids['imdb'] = str(imdb_id)
+        if tmdb_id: trakt_ids['tmdb'] = str(tmdb_id)
+        xbmcgui.Window(10000).setProperty('script.trakt.ids', json.dumps(trakt_ids))
+        xbmc.log(f"play_fshare_direct: set script.trakt.ids={json.dumps(trakt_ids)}", level=xbmc.LOGINFO)
+    elif title:
+        # Không lấy được ID — fallback title-based, Trakt tự resolve
+        trakt_meta = {'title': tvshowtitle or title}
+        if season:  trakt_meta['season']  = str(season)
+        if episode: trakt_meta['episode'] = str(episode)
+        xbmcgui.Window(10000).setProperty('script.trakt.ids', json.dumps(trakt_meta))
+        xbmc.log(f"play_fshare_direct: set script.trakt.ids (title-based)={json.dumps(trakt_meta)}", level=xbmc.LOGINFO)
 
     # ------------------------------------------------------------------ #
-    # 6. Lưu lịch sử xem
+    # 5. setResolvedUrl — trả CDN link + metadata về Kodi
+    # ------------------------------------------------------------------ #
+    xbmcplugin.setResolvedUrl(handle, True, listitem=list_item)
+
+    # ------------------------------------------------------------------ #
+    # 6. Lưu lịch sử sơ bộ ngay
     # ------------------------------------------------------------------ #
     try:
-        _hist_filename = (filename or os.path.basename((fshare_url or '').split('?')[0])).strip()
         save_play_history(
             title      = title or '',
             year       = year  or '',
-            filename   = _hist_filename,
-            fshare_url = fshare_url or '',
-            imdb_id    = imdb_id   or '',
-            tmdb_id    = tmdb_id   or '',
-            poster_url = poster    or '',
-            plot       = plot      or '',
+            filename   = _filename,
+            fshare_url = fshare_url,
+            imdb_id    = imdb_id or '',
+            tmdb_id    = tmdb_id or '',
+            poster_url = poster or '',
+            plot       = plot   or '',
             size_bytes = 0,
         )
     except Exception as _e:
         xbmc.log(f'play_fshare_direct: save_play_history error: {_e}', level=xbmc.LOGWARNING)
 
     # ------------------------------------------------------------------ #
-    # 7. setResolvedUrl — trả CDN link + metadata về Kodi
+    # 7. Background thread — chỉ chạy khi browse đã có tmdb_id
+    #    (luồng B): fetch plot/poster đầy đủ rồi updateInfoTag.
+    #    Luồng A đã có đầy đủ metadata từ blocking fetch → không cần thread.
     # ------------------------------------------------------------------ #
-    xbmcplugin.setResolvedUrl(handle, True, listitem=list_item)
+    if tmdb_id and not needs_blocking_fetch:
+        _snap = dict(
+            fshare_url  = fshare_url,
+            imdb_id     = imdb_id,
+            tmdb_id     = tmdb_id,
+            title       = title,
+            year        = year,
+            season      = season,
+            episode     = episode,
+            tvshowtitle = tvshowtitle,
+            filename    = _filename,
+            is_episode  = is_episode,
+        )
 
-    # ------------------------------------------------------------------ #
-    # 8. updateInfoTag() sau khi player bắt đầu (Hướng 3)
-    #    Đảm bảo skin hiện đúng plot/poster/IDs trong Now Playing,
-    #    kể cả các skin không đọc metadata từ resolved ListItem.
-    #    Chỉ chạy khi có metadata mới cần update (meta không rỗng).
-    # ------------------------------------------------------------------ #
-    if meta and (plot or poster or imdb_id or tmdb_id):
-        try:
-            player = xbmc.Player()
-            # Đợi player bắt đầu phát — tối đa 5 giây (50 x 100ms)
-            for _ in range(50):
+        def _metadata_thread(snap, li):
+            try:
+                _imdb  = snap['imdb_id']
+                _tmdb  = snap['tmdb_id']
+                _title = snap['title']
+                _year  = snap['year']
+                _s     = snap['season']
+                _e     = snap['episode']
+                _show  = snap['tvshowtitle']
+                _fname = snap['filename']
+                _is_ep = snap['is_episode']
+
+                # Browse đã tra → fetch chi tiết bằng tmdb_id (1-2 call, nhanh)
+                _meta = {}
+                try:
+                    _meta = fetch_tmdb_details_by_id(tmdb_id=_tmdb, season=_s, episode=_e)
+                    if _meta:
+                        _imdb  = _imdb  or _meta.get('imdb_id', '')
+                        _title = _title or _meta.get('title',   _title)
+                        _year  = _year  or _meta.get('year',    _year)
+                        xbmc.log(
+                            f"play_fshare_direct[bg]: fetch_by_id tmdb={_tmdb} "
+                            f"plot={bool(_meta.get('plot'))} poster={bool(_meta.get('poster'))}",
+                            level=xbmc.LOGINFO
+                        )
+                except Exception as ex:
+                    xbmc.log(f"play_fshare_direct[bg]: fetch_by_id error: {ex}", level=xbmc.LOGWARNING)
+
+                if not _meta:
+                    return
+
+                # Cập nhật trakt.ids nếu lấy thêm được imdb_id
+                if _imdb and not snap['imdb_id']:
+                    xbmcgui.Window(10000).setProperty(
+                        'script.trakt.ids',
+                        json.dumps({'imdb': str(_imdb), 'tmdb': str(_tmdb)})
+                    )
+
+                _plot   = _meta.get('plot', '')
+                _poster = _meta.get('poster', '')
+                _fanart = _meta.get('fanart', '')
+                _thumb  = _meta.get('thumb', '') or _poster
+                _rating = _meta.get('rating', '')
+
+                _it = li.getVideoInfoTag()
+                _it.setTitle(_title or '')
+                if _plot:   _it.setPlot(_plot)
+                if _rating:
+                    try: _it.setRating(float(_rating))
+                    except (ValueError, TypeError): pass
+                if _year and str(_year).isdigit():
+                    _it.setYear(int(_year))
+
+                _ids = {}
+                if _imdb:
+                    _ids['imdb'] = str(_imdb)
+                    _it.setIMDBNumber(str(_imdb))
+                if _tmdb:
+                    _ids['tmdb'] = str(_tmdb)
+                if _ids:
+                    _it.setUniqueIDs(_ids, 'imdb' if _imdb else 'tmdb')
+
+                if _is_ep:
+                    _it.setMediaType('episode')
+                    _it.setTvShowTitle(_show or _title or '')
+                    try:
+                        _it.setSeason(int(_s))
+                        _it.setEpisode(int(_e))
+                    except (ValueError, TypeError): pass
+                else:
+                    _it.setMediaType('movie')
+
+                _art = {}
+                if _poster: _art['poster'] = _poster
+                if _thumb:  _art['thumb']  = _thumb
+                if _fanart: _art['fanart'] = _fanart
+                if _art:    li.setArt(_art)
+
+                # Cập nhật lịch sử với plot/poster đầy đủ
+                try:
+                    save_play_history(
+                        title      = _title or '',
+                        year       = _year  or '',
+                        filename   = _fname,
+                        fshare_url = snap['fshare_url'],
+                        imdb_id    = _imdb  or '',
+                        tmdb_id    = _tmdb  or '',
+                        poster_url = _poster or '',
+                        plot       = _plot   or '',
+                        size_bytes = 0,
+                    )
+                except Exception as _he:
+                    xbmc.log(f'play_fshare_direct[bg]: save_play_history error: {_he}', level=xbmc.LOGWARNING)
+
+                # Đợi player bắt đầu rồi updateInfoTag — tối đa 20s
+                player  = xbmc.Player()
+                monitor = xbmc.Monitor()
+                for _ in range(200):
+                    if monitor.abortRequested() or player.isPlaying():
+                        break
+                    xbmc.sleep(100)
+
                 if player.isPlaying():
-                    break
-                xbmc.sleep(100)
+                    player.updateInfoTag(li)
+                    xbmc.log(
+                        f"play_fshare_direct[bg]: updateInfoTag OK — "
+                        f"plot={bool(_plot)} poster={bool(_poster)} "
+                        f"imdb={_imdb} tmdb={_tmdb}",
+                        level=xbmc.LOGINFO
+                    )
+                else:
+                    xbmc.log("play_fshare_direct[bg]: updateInfoTag skipped — player not started within 20s", level=xbmc.LOGWARNING)
 
-            if player.isPlaying():
-                player.updateInfoTag(list_item)
-                xbmc.log(
-                    f"play_fshare_direct: updateInfoTag OK — "
-                    f"plot={bool(plot)} poster={bool(poster)} "
-                    f"imdb={imdb_id} tmdb={tmdb_id}",
-                    level=xbmc.LOGINFO
-                )
-            else:
-                xbmc.log("play_fshare_direct: updateInfoTag skipped — player not started", level=xbmc.LOGWARNING)
-        except Exception as e:
-            xbmc.log(f"play_fshare_direct: updateInfoTag error: {e}", level=xbmc.LOGWARNING)
+            except Exception as ex:
+                xbmc.log(f"play_fshare_direct[bg]: thread error: {ex}", level=xbmc.LOGWARNING)
+
+        t = threading.Thread(target=_metadata_thread, args=(_snap, list_item), daemon=True)
+        t.start()
 
 
 def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
