@@ -3775,15 +3775,27 @@ def read_tmdbhelper_context(tmdb_id=None, wait_ms=800):
         if value:
             ctx[key] = value
 
-    # Validate tmdb_id khớp để tránh đọc nhầm context của item khác
+    # Validate tmdb_id khớp để tránh đọc nhầm context của item khác.
+    # Với episode: TMDb Helper truyền show_id qua URL params ({tmdb}),
+    # nhưng TMDbHelper.ListItem.UniqueId.tmdb trong Window có thể là episode_id
+    # hoặc show_id tùy version TMDb Helper → không discard nếu ctx có đủ plot/poster.
     if tmdb_id and ctx.get('tmdb_id'):
         if str(ctx['tmdb_id']) != str(tmdb_id):
-            xbmc.log(
-                f"read_tmdbhelper_context: tmdb_id mismatch "
-                f"expected={tmdb_id} got={ctx.get('tmdb_id')} — discarding",
-                level=xbmc.LOGWARNING
-            )
-            return {}
+            # Chỉ discard nếu context rõ ràng là của item khác (thiếu cả plot lẫn poster)
+            # Nếu có plot hoặc poster thì vẫn dùng — có thể là episode context hợp lệ
+            if not ctx.get('plot') and not ctx.get('poster'):
+                xbmc.log(
+                    f"read_tmdbhelper_context: tmdb_id mismatch "
+                    f"expected={tmdb_id} got={ctx.get('tmdb_id')} and no plot/poster — discarding",
+                    level=xbmc.LOGWARNING
+                )
+                return {}
+            else:
+                xbmc.log(
+                    f"read_tmdbhelper_context: tmdb_id mismatch "
+                    f"expected={tmdb_id} got={ctx.get('tmdb_id')} but has plot/poster — keeping",
+                    level=xbmc.LOGINFO
+                )
 
     if ctx:
         xbmc.log(
@@ -4006,6 +4018,35 @@ def play_fshare_direct(fshare_url, imdb_id='', tmdb_id='', title='', year='',
         if episode: trakt_meta['episode'] = str(episode)
         xbmcgui.Window(10000).setProperty('script.trakt.ids', json.dumps(trakt_meta))
         xbmc.log(f"play_fshare_direct: set script.trakt.ids (title-based)={json.dumps(trakt_meta)}", level=xbmc.LOGINFO)
+
+    # Set TMDbHelper.ListItem.* Window properties để AH2 và Kore đọc được
+    # metadata đúng (plot tiếng Việt, poster, IDs) ngay khi play bắt đầu.
+    # Chỉ set khi có dữ liệu thực từ blocking fetch hoặc browse.
+    try:
+        _win = xbmcgui.Window(10000)
+        _win_title = meta.get('title', '') or title or ''
+        if _win_title:
+            _win.setProperty('TMDbHelper.ListItem.Title',         _win_title)
+        if plot:
+            _win.setProperty('TMDbHelper.ListItem.Plot',          plot)
+        if poster:
+            _win.setProperty('TMDbHelper.ListItem.thumb',         poster)
+        if fanart:
+            _win.setProperty('TMDbHelper.ListItem.fanart',        fanart)
+        if rating:
+            _win.setProperty('TMDbHelper.ListItem.Rating',        str(rating))
+        if tmdb_id:
+            _win.setProperty('TMDbHelper.ListItem.UniqueId.tmdb', str(tmdb_id))
+        if imdb_id:
+            _win.setProperty('TMDbHelper.ListItem.UniqueId.imdb', str(imdb_id))
+        if tmdb_id or imdb_id:
+            xbmc.log(
+                f"play_fshare_direct: set TMDbHelper.ListItem.* "
+                f"tmdb={tmdb_id} imdb={imdb_id} plot={bool(plot)}",
+                level=xbmc.LOGINFO
+            )
+    except Exception as _we:
+        xbmc.log(f"play_fshare_direct: TMDbHelper.ListItem set error: {_we}", level=xbmc.LOGWARNING)
 
     # ------------------------------------------------------------------ #
     # 5. setResolvedUrl — trả CDN link + metadata về Kodi
@@ -4385,34 +4426,125 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             # Không return, giữ nguyên links để vẫn play được
 
     # ------------------------------------------------------------------ #
-    # 4. Sort: file lớn nhất lên đầu (proxy cho chất lượng cao nhất)
+    # 3b. Verify: hard filter SxxExx + soft score title
+    #
+    #    Hard filter — SxxExx:
+    #      Nếu search có season+episode, bắt buộc tên file phải chứa đúng
+    #      SxxExx đó. Đây là sai sót phổ biến nhất của timfshare (trả về
+    #      đúng show nhưng sai tập).
+    #      Nếu hard filter loại sạch toàn bộ → bỏ filter (tránh không play được).
+    #
+    #    Soft score — title token overlap:
+    #      Tính % token của title/originaltitle TMDb Helper truyền vào
+    #      khớp với token của tên file. Dùng để sort ưu tiên, không loại hẳn.
+    #      Title tiếng Anh (originaltitle) được ưu tiên hơn tiếng Việt vì
+    #      tên file trên Fshare hầu hết là tiếng Anh.
+    #      Score < ngưỡng tối thiểu → sort xuống dưới, vẫn giữ làm fallback.
     # ------------------------------------------------------------------ #
-    links.sort(key=lambda x: x.get('size', 0), reverse=True)
+
+    def _title_tokens(raw_title):
+        """Tách title thành set token lowercase, bỏ stopword ngắn."""
+        if not raw_title:
+            return set()
+        # Bỏ năm, SxxExx, tech tags trước khi tokenize
+        cleaned = re.sub(r'\b(19|20)\d{2}\b', '', raw_title)
+        cleaned = re.sub(r'\bS\d{1,2}E\d{1,2}\b', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\b(1080p|2160p|720p|bluray|webrip|web-dl|hdtv|remux|hevc|x264|x265|avc|dts|aac|ac3|ddp|truehd|atmos|hdr|dv|mkv|mp4)\b', '', cleaned, flags=re.IGNORECASE)
+        tokens = set(t.lower() for t in re.split(r'[\s._\-]+', cleaned) if len(t) > 1)
+        return tokens
+
+    def _title_score(link_info, query_tokens):
+        """0.0–1.0: tỉ lệ token của title query khớp với tên file."""
+        if not query_tokens:
+            return 0.5  # Không có query → neutral score
+        fname_tokens = _title_tokens(link_info.get('title', ''))
+        if not fname_tokens:
+            return 0.0
+        matched = query_tokens & fname_tokens
+        return len(matched) / len(query_tokens)
+
+    # Lấy title để score — ưu tiên tvshowtitle (tiếng Anh thường) cho episode,
+    # title (originaltitle từ TMDb Helper) cho movie
+    _score_title = tvshowtitle if is_episode else title
+    _query_tokens = _title_tokens(_score_title)
+
+    if is_episode and season and episode:
+        # Hard filter: tên file phải chứa đúng SxxExx
+        _se_pattern = re.compile(
+            rf'\bS{int(season):02d}E{int(episode):02d}\b',
+            re.IGNORECASE
+        )
+        _verified = [l for l in links if _se_pattern.search(l.get('title', ''))]
+
+        if _verified:
+            xbmc.log(
+                f"auto_play_fshare: SxxExx hard filter S{int(season):02d}E{int(episode):02d} "
+                f"→ {len(_verified)}/{len(links)} passed",
+                level=xbmc.LOGINFO
+            )
+            links = _verified
+        else:
+            xbmc.log(
+                f"auto_play_fshare: SxxExx hard filter found 0 matches — skipping filter",
+                level=xbmc.LOGWARNING
+            )
+            notify(
+                f"Cảnh báo: không file nào chứa S{int(season):02d}E{int(episode):02d} — có thể play nhầm tập",
+                duration=4000, sound=False
+            )
+
+    # ------------------------------------------------------------------ #
+    # 4. Sort: title score DESC → size DESC
+    #    File có title khớp nhiều nhất lên đầu, cùng score thì file lớn hơn lên trước.
+    # ------------------------------------------------------------------ #
+    _SCORE_THRESHOLD = 0.6  # Ngưỡng tối thiểu để tin tưởng đây là đúng phim
+                             # score = số token khớp / tổng token query
+                             # "Wild China" (2 token) cần ≥ 2 token khớp → score=1.0
+                             # "Breaking Bad" (2 token) cần ≥ 2 token khớp → score=1.0
+                             # "The Bear" → 'the' bị lọc ngắn, còn 1 token → fallback 0.5
+                             # Nếu query_tokens rỗng (không có title) → bỏ qua threshold
+
+    links.sort(key=lambda x: (_title_score(x, _query_tokens), x.get('size', 0)), reverse=True)
     best = links[0]
+    _best_score = _title_score(best, _query_tokens)
+
+    # Kiểm tra threshold: nếu có query_tokens và score quá thấp → có thể play nhầm
+    if _query_tokens and _best_score < _SCORE_THRESHOLD:
+        xbmc.log(
+            f"auto_play_fshare: best candidate '{best.get('title','')}' "
+            f"score={_best_score:.2f} < threshold={_SCORE_THRESHOLD} — aborting to prevent wrong file",
+            level=xbmc.LOGWARNING
+        )
+        notify(
+            f"Không tìm được file đúng '{title}' (match tốt nhất: {_best_score:.0%}) — dừng play",
+            duration=5000, sound=False
+        )
+        xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+        return
 
     best_title   = best.get('title', '')
     best_size_gb = best.get('size', 0) / (1024 ** 3)
     xbmc.log(
         f"auto_play_fshare: selected '{best_title}' "
-        f"({best_size_gb:.2f} GB) "
+        f"({best_size_gb:.2f} GB, title_score={_best_score:.2f}) "
         f"from {len(links)} candidate(s)",
         level=xbmc.LOGINFO
     )
 
     if get_autoplay_notify():
-        # Hiện: size · tier N: <include của tier đã matched> · size range · excl: exclude · N ứng viên
         parts = [f'{best_size_gb:.2f} GB']
         if include_tiers and matched_tier > 0:
-            # Chỉ lấy groups của tier đã matched (index = matched_tier - 1)
             matched_groups = include_tiers[matched_tier - 1]
             include_str = ';'.join(','.join(g) for g in matched_groups)
-            # Chỉ hiện nhãn TN nếu có nhiều hơn 1 tier (để biết đã fallback)
             tier_label = f'T{matched_tier}: ' if len(include_tiers) > 1 else ''
             parts.append(f'{tier_label}{include_str}')
         if (_size_min_gb > 0 or _size_max_gb > 0) and size_gb:
             parts.append(f'size: {size_gb} GB')
         if exclude_list:
             parts.append(f'excl: {",".join(exclude_list)}')
+        # Hiện title score để dễ debug khi play nhầm file
+        if _query_tokens:
+            parts.append(f'match: {_best_score:.0%}')
         parts.append(f'{len(links)} ứng viên')
         body = ' · '.join(parts)
         xbmcgui.Dialog().notification(
@@ -4609,9 +4741,15 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             _waited += 100
 
         if player.isPlaying():
-            # Update skin Kodi — đọc từ player internal state, không từ Window properties
-            player.updateInfoTag(list_item)
-            xbmc.log("auto_play_fshare: updateInfoTag OK", level=xbmc.LOGINFO)
+            # Đợi thêm 1.5s sau isPlaying() để skin load VideoFullScreen.xml xong
+            # (log cho thấy isPlaying() = True chỉ ~60ms sau setResolvedUrl —
+            # quá sớm so với thời gian skin render OSD)
+            monitor.waitForAbort(1.5)
+            if player.isPlaying():
+                player.updateInfoTag(list_item)
+                xbmc.log("auto_play_fshare: updateInfoTag OK", level=xbmc.LOGINFO)
+            else:
+                xbmc.log("auto_play_fshare: updateInfoTag skipped — player stopped before update", level=xbmc.LOGWARNING)
         else:
             xbmc.log("auto_play_fshare: updateInfoTag skipped — player not started within 10s", level=xbmc.LOGWARNING)
 
@@ -4999,6 +5137,9 @@ def router(paramstring):
             #   Episode: action=auto_play_fshare&title={showname}&year={year}
             #            &imdb={imdb}&tmdb={tmdb}&season={season}&episode={episode}
             #            &size_gb=0-8
+            #   QUAN TRỌNG: Episode phải dùng {showname} không phải {originaltitle}.
+            #   {originaltitle} với episode = tên tập, không phải tên show.
+            #   tvshowtitle không cần truyền riêng — router tự lấy từ title={showname}.
             #   size_gb: 'min-max' GB, dùng 0 để bỏ qua một đầu (vd: '10-0' = ≥10 GB)
             movie_title = params.get('title', '')
             if movie_title:
