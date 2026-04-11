@@ -4258,6 +4258,18 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
         return
 
+    # Log toàn bộ kết quả thô từ timfshare để debug
+    xbmc.log(
+        f"auto_play_fshare: timfshare raw results ({len(links)} items):",
+        level=xbmc.LOGINFO
+    )
+    for _i, _l in enumerate(links):
+        _sz = _l.get('size', 0) / (1024**3)
+        xbmc.log(
+            f"  [{_i+1}] {_l.get('title','?')} ({_sz:.2f} GB)",
+            level=xbmc.LOGINFO
+        )
+
     # ------------------------------------------------------------------ #
     # 2. Apply include / exclude filter (tái dùng logic từ show_fshare_links)
     # ------------------------------------------------------------------ #
@@ -4332,19 +4344,108 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         tokens = _tokenize(fname)
         return all(any(_token_match(kw, tokens, full) for kw in group) for group in groups)
 
+    # Định nghĩa title score sớm để dùng được cả trong tier loop lẫn verify step
+    def _title_tokens(raw_title):
+        """Tách title thành set token lowercase, bỏ tech tags và stopword ngắn."""
+        if not raw_title:
+            return set()
+        cleaned = re.sub(r'\b(19|20)\d{2}\b', '', raw_title)
+        cleaned = re.sub(r'\bS\d{1,2}E\d{1,2}\b', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\b(1080p|2160p|720p|bluray|webrip|web-dl|hdtv|remux|hevc|x264|x265|avc|dts|aac|ac3|ddp|truehd|atmos|hdr|dv|mkv|mp4)\b', '', cleaned, flags=re.IGNORECASE)
+        tokens = set(t.lower() for t in re.split(r'[\s._\-]+', cleaned) if len(t) > 1)
+        return tokens
+
+    def _title_score(link_info, query_tokens):
+        """0.0–1.0: tỉ lệ token của title query khớp với tên file."""
+        if not query_tokens:
+            return 0.5  # Không có query → neutral score
+        fname_tokens = _title_tokens(link_info.get('title', ''))
+        if not fname_tokens:
+            return 0.0
+        return len(query_tokens & fname_tokens) / len(query_tokens)
+
+    _SCORE_THRESHOLD = 0.6  # Ngưỡng tối thiểu — dùng trong cả tier loop và verify step
+    _score_title  = tvshowtitle if is_episode else title
+    _query_tokens = _title_tokens(_score_title)
+
     if include_tiers or exclude_list:
         # Áp exclude trước — loại bỏ vĩnh viễn trước khi thử bất kỳ tier nào
         candidates = [l for l in links if not _is_excluded(l)]
+        _excluded = [l for l in links if _is_excluded(l)]
+        if _excluded:
+            xbmc.log(
+                f"auto_play_fshare: exclude filter removed {len(_excluded)} item(s):",
+                level=xbmc.LOGINFO
+            )
+            for _l in _excluded:
+                xbmc.log(f"  EXCLUDED: {_l.get('title','?')}", level=xbmc.LOGINFO)
+        xbmc.log(
+            f"auto_play_fshare: after exclude → {len(candidates)} candidate(s) remain",
+            level=xbmc.LOGINFO
+        )
 
         matched      = None
         matched_tier = -1
 
         for i, groups in enumerate(include_tiers):
             tier_result = [l for l in candidates if _matches_groups(l, groups)]
-            if tier_result:
+            _tier_kws = ';'.join(','.join(g) for g in groups)
+
+            # Tích hợp title score vào tier: chỉ accept tier này nếu có ít nhất
+            # 1 file vừa pass tier filter vừa pass score threshold.
+            # Nếu tier có match nhưng tất cả đều score thấp (sai phim) → thử tier tiếp.
+            # Ví dụ: tier1=atmos → Wild.Babies.Atmos pass nhưng score=0.5 < 0.6 → skip
+            #         tier3=1080p → Wild.China.1080p pass và score=1.0 ≥ 0.6 → accept ✓
+            if tier_result and _query_tokens:
+                tier_qualified = [l for l in tier_result
+                                  if _title_score(l, _query_tokens) >= _SCORE_THRESHOLD]
+                if tier_qualified:
+                    xbmc.log(
+                        f"auto_play_fshare: tier {i+1} [{_tier_kws}] → "
+                        f"{len(tier_result)} match(es), {len(tier_qualified)} pass score≥{_SCORE_THRESHOLD}:",
+                        level=xbmc.LOGINFO
+                    )
+                    for _l in tier_qualified:
+                        xbmc.log(
+                            f"  TIER{i+1} ACCEPT: {_l.get('title','?')} "
+                            f"(score={_title_score(_l, _query_tokens):.2f})",
+                            level=xbmc.LOGINFO
+                        )
+                    matched      = tier_qualified
+                    matched_tier = i + 1
+                    break
+                else:
+                    # Tier có match nhưng tất cả score thấp → log và thử tier tiếp
+                    xbmc.log(
+                        f"auto_play_fshare: tier {i+1} [{_tier_kws}] → "
+                        f"{len(tier_result)} match(es) but all score < {_SCORE_THRESHOLD} "
+                        f"(likely wrong show) — trying next tier",
+                        level=xbmc.LOGINFO
+                    )
+                    for _l in tier_result:
+                        xbmc.log(
+                            f"  TIER{i+1} LOW_SCORE: {_l.get('title','?')} "
+                            f"(score={_title_score(_l, _query_tokens):.2f})",
+                            level=xbmc.LOGINFO
+                        )
+            elif tier_result:
+                # Không có query_tokens (không biết title) → accept tier ngay như cũ
+                xbmc.log(
+                    f"auto_play_fshare: tier {i+1} [{_tier_kws}] → {len(tier_result)} match(es) (no title filter):",
+                    level=xbmc.LOGINFO
+                )
+                for _l in tier_result:
+                    xbmc.log(f"  TIER{i+1} PASS: {_l.get('title','?')}", level=xbmc.LOGINFO)
                 matched      = tier_result
                 matched_tier = i + 1
                 break
+            else:
+                xbmc.log(
+                    f"auto_play_fshare: tier {i+1} [{_tier_kws}] → 0 match(es)",
+                    level=xbmc.LOGINFO
+                )
+                for _l in [c for c in candidates if c not in tier_result]:
+                    xbmc.log(f"  TIER{i+1} FAIL: {_l.get('title','?')}", level=xbmc.LOGINFO)
 
         if matched:
             if matched_tier > 1:
@@ -4416,6 +4517,8 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
                 f"{len(size_filtered)}/{len(links)} file(s) trong khoảng",
                 level=xbmc.LOGINFO
             )
+            for _l in [l for l in links if not _in_size_range(l)]:
+                xbmc.log(f"  SIZE REMOVED: {_l.get('title','?')} ({_l.get('size',0)/(1024**3):.2f} GB)", level=xbmc.LOGINFO)
             links = size_filtered
         else:
             xbmc.log(
@@ -4435,38 +4538,8 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     #      Nếu hard filter loại sạch toàn bộ → bỏ filter (tránh không play được).
     #
     #    Soft score — title token overlap:
-    #      Tính % token của title/originaltitle TMDb Helper truyền vào
-    #      khớp với token của tên file. Dùng để sort ưu tiên, không loại hẳn.
-    #      Title tiếng Anh (originaltitle) được ưu tiên hơn tiếng Việt vì
-    #      tên file trên Fshare hầu hết là tiếng Anh.
-    #      Score < ngưỡng tối thiểu → sort xuống dưới, vẫn giữ làm fallback.
+    #      Đã tích hợp vào tier loop phía trên. Bước này chỉ còn SxxExx filter.
     # ------------------------------------------------------------------ #
-
-    def _title_tokens(raw_title):
-        """Tách title thành set token lowercase, bỏ stopword ngắn."""
-        if not raw_title:
-            return set()
-        # Bỏ năm, SxxExx, tech tags trước khi tokenize
-        cleaned = re.sub(r'\b(19|20)\d{2}\b', '', raw_title)
-        cleaned = re.sub(r'\bS\d{1,2}E\d{1,2}\b', '', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'\b(1080p|2160p|720p|bluray|webrip|web-dl|hdtv|remux|hevc|x264|x265|avc|dts|aac|ac3|ddp|truehd|atmos|hdr|dv|mkv|mp4)\b', '', cleaned, flags=re.IGNORECASE)
-        tokens = set(t.lower() for t in re.split(r'[\s._\-]+', cleaned) if len(t) > 1)
-        return tokens
-
-    def _title_score(link_info, query_tokens):
-        """0.0–1.0: tỉ lệ token của title query khớp với tên file."""
-        if not query_tokens:
-            return 0.5  # Không có query → neutral score
-        fname_tokens = _title_tokens(link_info.get('title', ''))
-        if not fname_tokens:
-            return 0.0
-        matched = query_tokens & fname_tokens
-        return len(matched) / len(query_tokens)
-
-    # Lấy title để score — ưu tiên tvshowtitle (tiếng Anh thường) cho episode,
-    # title (originaltitle từ TMDb Helper) cho movie
-    _score_title = tvshowtitle if is_episode else title
-    _query_tokens = _title_tokens(_score_title)
 
     if is_episode and season and episode:
         # Hard filter: tên file phải chứa đúng SxxExx
@@ -4496,14 +4569,8 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     # ------------------------------------------------------------------ #
     # 4. Sort: title score DESC → size DESC
     #    File có title khớp nhiều nhất lên đầu, cùng score thì file lớn hơn lên trước.
+    #    _SCORE_THRESHOLD, _title_score, _query_tokens đã định nghĩa trước tier loop.
     # ------------------------------------------------------------------ #
-    _SCORE_THRESHOLD = 0.6  # Ngưỡng tối thiểu để tin tưởng đây là đúng phim
-                             # score = số token khớp / tổng token query
-                             # "Wild China" (2 token) cần ≥ 2 token khớp → score=1.0
-                             # "Breaking Bad" (2 token) cần ≥ 2 token khớp → score=1.0
-                             # "The Bear" → 'the' bị lọc ngắn, còn 1 token → fallback 0.5
-                             # Nếu query_tokens rỗng (không có title) → bỏ qua threshold
-
     links.sort(key=lambda x: (_title_score(x, _query_tokens), x.get('size', 0)), reverse=True)
     best = links[0]
     _best_score = _title_score(best, _query_tokens)
