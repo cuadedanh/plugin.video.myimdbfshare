@@ -499,6 +499,18 @@ def get_autoplay_notify_duration():
         return 5000
 
 
+def get_autoplay_score_threshold():
+    """Ngưỡng score tối thiểu để chấp nhận file khi auto play (0.0–1.0).
+    File có score thấp hơn ngưỡng này bị loại trước khi vào exclude/tier filter.
+    Mặc định 0.6 — cần ít nhất 60% token title khớp với tên file.
+    """
+    try:
+        value = float(get_local_setting('autoplay_score_threshold', 0.6) or 0.6)
+        return max(0.0, min(1.0, value))
+    except Exception:
+        return 0.6
+
+
 def get_metadata_source():
     """Tra ve nguon metadata: 'none', 'tmdb', 'omdb'. Mac dinh 'tmdb'."""
     value = get_local_setting('metadata_source', 'tmdb')
@@ -770,6 +782,21 @@ def settings_menu():
             'Số giây hiển thị thông báo tên file khi auto play.\n'
             'Nhập theo mili giây (1000 = 1 giây). Tối thiểu 1000ms.\n'
             'Mặc định: 5000ms (5 giây) — đủ để đọc tên file dài.'
+        )
+    )
+    _threshold_pct = int(get_autoplay_score_threshold() * 100)
+    add(
+        sys.argv[0] + '?' + urllib.parse.urlencode({'action': 'set_autoplay_score_threshold'}),
+        _make_setting_item(
+            f'[Ngưỡng khớp tên file auto play: {_threshold_pct}%]',
+            'Tỉ lệ % token tên phim cần khớp với tên file Fshare để được chấp nhận.\n'
+            'Áp dụng TRƯỚC include/exclude — loại ngay file không liên quan đến phim đang chọn.\n\n'
+            'Ví dụ với "Wild China" (2 token: wild, china):\n'
+            '  60% (mặc định): cần ≥ 2/2 token → chỉ nhận Wild.China.*\n'
+            '  50%: nhận cả Wild.Babies.* (có "wild") → dễ play nhầm\n'
+            '  100%: nghiêm ngặt nhất — tất cả token phải khớp\n\n'
+            'Nếu không file nào đạt ngưỡng → dừng play, thông báo rõ lý do.\n'
+            'Nhập từ 0 đến 100 (%). Mặc định: 60.'
         )
     )
 
@@ -4271,7 +4298,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         )
 
     # ------------------------------------------------------------------ #
-    # 2. Apply include / exclude filter (tái dùng logic từ show_fshare_links)
+    # Định nghĩa các hàm helper dùng xuyên suốt pipeline filter
     # ------------------------------------------------------------------ #
     def _tokenize(filename):
         name = os.path.basename(filename or '').lower()
@@ -4285,9 +4312,6 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         return kw and (kw in tokens or kw in full_name)
 
     def _parse_include_groups(tier_str):
-        """Parse một tier thành list of OR-groups: 'A,B;C,D' → [['a','b'],['c','d']]
-        ';' phân cách nhóm AND, ',' phân cách OR trong nhóm.
-        """
         if not tier_str:
             return []
         groups = []
@@ -4300,16 +4324,6 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         return groups
 
     def _parse_include_tiers(param):
-        """
-        Parse chuỗi include có nhiều tầng ưu tiên, phân cách bằng '~~'.
-        Ví dụ: '2160p,4k;atmos~~1080p;dts~~720p'
-          → tier 1: [['2160p','4k'],['atmos']]
-          → tier 2: [['1080p'],['dts']]
-          → tier 3: [['720p']]
-        Tương thích ngược: nếu không có '~~', coi như 1 tier duy nhất.
-        Dùng '~~' thay vì '||' vì '||' bị shell interpret khi TMDb Helper build URL.
-        Dùng ',' thay vì '|' cho OR vì '|' bị Kodi cắt trong URL params.
-        """
         if not param:
             return []
         tiers = []
@@ -4322,171 +4336,170 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         return tiers
 
     def _parse_exclude_list(param):
-        """Phan tich exclude='A,B,C' thanh ['a','b','c']."""
         if not param:
             return []
         return [k.strip().lower() for k in str(param).split(',') if k.strip()]
 
-    include_tiers = _parse_include_tiers(include)
-    exclude_list  = _parse_exclude_list(exclude)
-    matched_tier  = 0  # 0 = không có filter, >0 = tier đã khớp
-
-    def _is_excluded(link_info):
-        fname  = link_info.get('title', '')
-        full   = fname.lower()
-        tokens = _tokenize(fname)
-        return any(_token_match(kw, tokens, full) for kw in exclude_list)
-
-    def _matches_groups(link_info, groups):
-        """Kiểm tra link_info có thỏa mãn tất cả các AND-group không."""
-        fname  = link_info.get('title', '')
-        full   = fname.lower()
-        tokens = _tokenize(fname)
-        return all(any(_token_match(kw, tokens, full) for kw in group) for group in groups)
-
-    # Định nghĩa title score sớm để dùng được cả trong tier loop lẫn verify step
     def _title_tokens(raw_title):
-        """Tách title thành set token lowercase, bỏ tech tags và stopword ngắn."""
         if not raw_title:
             return set()
         cleaned = re.sub(r'\b(19|20)\d{2}\b', '', raw_title)
         cleaned = re.sub(r'\bS\d{1,2}E\d{1,2}\b', '', cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r'\b(1080p|2160p|720p|bluray|webrip|web-dl|hdtv|remux|hevc|x264|x265|avc|dts|aac|ac3|ddp|truehd|atmos|hdr|dv|mkv|mp4)\b', '', cleaned, flags=re.IGNORECASE)
-        tokens = set(t.lower() for t in re.split(r'[\s._\-]+', cleaned) if len(t) > 1)
-        return tokens
+        return set(t.lower() for t in re.split(r'[\s._\-]+', cleaned) if len(t) > 1)
 
     def _title_score(link_info, query_tokens):
-        """0.0–1.0: tỉ lệ token của title query khớp với tên file."""
         if not query_tokens:
-            return 0.5  # Không có query → neutral score
+            return 0.5
         fname_tokens = _title_tokens(link_info.get('title', ''))
-        if not fname_tokens:
-            return 0.0
-        return len(query_tokens & fname_tokens) / len(query_tokens)
+        return len(query_tokens & fname_tokens) / len(query_tokens) if fname_tokens else 0.0
 
-    _SCORE_THRESHOLD = 0.6  # Ngưỡng tối thiểu — dùng trong cả tier loop và verify step
-    _score_title  = tvshowtitle if is_episode else title
-    _query_tokens = _title_tokens(_score_title)
+    def _is_excluded(link_info):
+        fname  = link_info.get('title', '')
+        tokens = _tokenize(fname)
+        return any(_token_match(kw, tokens, fname.lower()) for kw in exclude_list)
 
-    if include_tiers or exclude_list:
-        # Áp exclude trước — loại bỏ vĩnh viễn trước khi thử bất kỳ tier nào
-        candidates = [l for l in links if not _is_excluded(l)]
-        _excluded = [l for l in links if _is_excluded(l)]
-        if _excluded:
-            xbmc.log(
-                f"auto_play_fshare: exclude filter removed {len(_excluded)} item(s):",
-                level=xbmc.LOGINFO
-            )
-            for _l in _excluded:
-                xbmc.log(f"  EXCLUDED: {_l.get('title','?')}", level=xbmc.LOGINFO)
+    def _matches_groups(link_info, groups):
+        fname  = link_info.get('title', '')
+        tokens = _tokenize(fname)
+        return all(any(_token_match(kw, tokens, fname.lower()) for kw in group) for group in groups)
+
+    include_tiers    = _parse_include_tiers(include)
+    exclude_list     = _parse_exclude_list(exclude)
+    matched_tier     = 0
+    _SCORE_THRESHOLD = get_autoplay_score_threshold()
+    _score_title     = tvshowtitle if is_episode else title
+    _query_tokens    = _title_tokens(_score_title)
+
+    xbmc.log(
+        f"auto_play_fshare: score_threshold={_SCORE_THRESHOLD:.0%} "
+        f"query_tokens={_query_tokens}",
+        level=xbmc.LOGINFO
+    )
+
+    # ------------------------------------------------------------------ #
+    # 2. SxxExx hard filter — TRƯỚC exclude/tier
+    # ------------------------------------------------------------------ #
+    if is_episode and season and episode:
+        _se_pattern = re.compile(
+            rf'\bS{int(season):02d}E{int(episode):02d}\b',
+            re.IGNORECASE
+        )
+        _se_passed = [l for l in links if _se_pattern.search(l.get('title', ''))]
+        _se_failed = [l for l in links if not _se_pattern.search(l.get('title', ''))]
         xbmc.log(
-            f"auto_play_fshare: after exclude → {len(candidates)} candidate(s) remain",
+            f"auto_play_fshare: [Bước 1/SxxExx] S{int(season):02d}E{int(episode):02d} "
+            f"\u2192 {len(_se_passed)}/{len(links)} passed",
             level=xbmc.LOGINFO
         )
+        for _l in _se_failed:
+            xbmc.log(f"  SxxExx FAIL: {_l.get('title','?')}", level=xbmc.LOGINFO)
+        if _se_passed:
+            links = _se_passed
+        else:
+            xbmc.log("auto_play_fshare: SxxExx: 0 match — aborting", level=xbmc.LOGWARNING)
+            notify(
+                f"Không file nào chứa S{int(season):02d}E{int(episode):02d} — dừng play",
+                duration=5000, sound=False
+            )
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
 
-        matched      = None
+    # ------------------------------------------------------------------ #
+    # 3. Score filter — TRƯỚC exclude/tier
+    # ------------------------------------------------------------------ #
+    if _query_tokens:
+        _score_passed = [l for l in links if _title_score(l, _query_tokens) >= _SCORE_THRESHOLD]
+        _score_failed = [l for l in links if _title_score(l, _query_tokens) < _SCORE_THRESHOLD]
+        xbmc.log(
+            f"auto_play_fshare: [Bước 2/Score] threshold={_SCORE_THRESHOLD:.0%} "
+            f"\u2192 {len(_score_passed)}/{len(links)} passed",
+            level=xbmc.LOGINFO
+        )
+        for _l in _score_failed:
+            xbmc.log(
+                f"  Score FAIL: {_l.get('title','?')} "
+                f"(score={_title_score(_l, _query_tokens):.2f})",
+                level=xbmc.LOGINFO
+            )
+        if _score_passed:
+            links = _score_passed
+            for _l in _score_passed:
+                xbmc.log(
+                    f"  Score PASS: {_l.get('title','?')} "
+                    f"(score={_title_score(_l, _query_tokens):.2f})",
+                    level=xbmc.LOGINFO
+                )
+        else:
+            best_score = max((_title_score(l, _query_tokens) for l in links), default=0.0)
+            xbmc.log(
+                f"auto_play_fshare: Score: 0 passed (best={best_score:.0%} < {_SCORE_THRESHOLD:.0%}) — aborting",
+                level=xbmc.LOGWARNING
+            )
+            notify(
+                f"Không file nào khớp '{_score_title}' "
+                f"(tốt nhất: {best_score:.0%}, cần \u2265{_SCORE_THRESHOLD:.0%}) — dừng play",
+                duration=5000, sound=False
+            )
+            xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
+            return
+
+    # ------------------------------------------------------------------ #
+    # 4. Exclude filter
+    # ------------------------------------------------------------------ #
+    if include_tiers or exclude_list:
+        candidates = [l for l in links if not _is_excluded(l)]
+        _excluded  = [l for l in links if _is_excluded(l)]
+        if _excluded:
+            xbmc.log(f"auto_play_fshare: [Bước 3/Exclude] removed {len(_excluded)}:", level=xbmc.LOGINFO)
+            for _l in _excluded:
+                xbmc.log(f"  EXCLUDED: {_l.get('title','?')}", level=xbmc.LOGINFO)
+        xbmc.log(f"auto_play_fshare: after exclude \u2192 {len(candidates)} remain", level=xbmc.LOGINFO)
+
+        # ------------------------------------------------------------------ #
+        # 5. Tier (include) filter
+        # ------------------------------------------------------------------ #
+        matched = None
         matched_tier = -1
 
         for i, groups in enumerate(include_tiers):
             tier_result = [l for l in candidates if _matches_groups(l, groups)]
-            _tier_kws = ';'.join(','.join(g) for g in groups)
-
-            # Tích hợp title score vào tier: chỉ accept tier này nếu có ít nhất
-            # 1 file vừa pass tier filter vừa pass score threshold.
-            # Nếu tier có match nhưng tất cả đều score thấp (sai phim) → thử tier tiếp.
-            # Ví dụ: tier1=atmos → Wild.Babies.Atmos pass nhưng score=0.5 < 0.6 → skip
-            #         tier3=1080p → Wild.China.1080p pass và score=1.0 ≥ 0.6 → accept ✓
-            if tier_result and _query_tokens:
-                tier_qualified = [l for l in tier_result
-                                  if _title_score(l, _query_tokens) >= _SCORE_THRESHOLD]
-                if tier_qualified:
-                    xbmc.log(
-                        f"auto_play_fshare: tier {i+1} [{_tier_kws}] → "
-                        f"{len(tier_result)} match(es), {len(tier_qualified)} pass score≥{_SCORE_THRESHOLD}:",
-                        level=xbmc.LOGINFO
-                    )
-                    for _l in tier_qualified:
-                        xbmc.log(
-                            f"  TIER{i+1} ACCEPT: {_l.get('title','?')} "
-                            f"(score={_title_score(_l, _query_tokens):.2f})",
-                            level=xbmc.LOGINFO
-                        )
-                    matched      = tier_qualified
-                    matched_tier = i + 1
-                    break
-                else:
-                    # Tier có match nhưng tất cả score thấp → log và thử tier tiếp
-                    xbmc.log(
-                        f"auto_play_fshare: tier {i+1} [{_tier_kws}] → "
-                        f"{len(tier_result)} match(es) but all score < {_SCORE_THRESHOLD} "
-                        f"(likely wrong show) — trying next tier",
-                        level=xbmc.LOGINFO
-                    )
-                    for _l in tier_result:
-                        xbmc.log(
-                            f"  TIER{i+1} LOW_SCORE: {_l.get('title','?')} "
-                            f"(score={_title_score(_l, _query_tokens):.2f})",
-                            level=xbmc.LOGINFO
-                        )
-            elif tier_result:
-                # Không có query_tokens (không biết title) → accept tier ngay như cũ
-                xbmc.log(
-                    f"auto_play_fshare: tier {i+1} [{_tier_kws}] → {len(tier_result)} match(es) (no title filter):",
-                    level=xbmc.LOGINFO
-                )
-                for _l in tier_result:
-                    xbmc.log(f"  TIER{i+1} PASS: {_l.get('title','?')}", level=xbmc.LOGINFO)
+            _tier_kws   = ';'.join(','.join(g) for g in groups)
+            xbmc.log(
+                f"auto_play_fshare: [Bước 4/Tier {i+1}] [{_tier_kws}] \u2192 {len(tier_result)} match(es)",
+                level=xbmc.LOGINFO
+            )
+            for _l in tier_result:
+                xbmc.log(f"  TIER{i+1} PASS: {_l.get('title','?')}", level=xbmc.LOGINFO)
+            if tier_result:
                 matched      = tier_result
                 matched_tier = i + 1
                 break
-            else:
-                xbmc.log(
-                    f"auto_play_fshare: tier {i+1} [{_tier_kws}] → 0 match(es)",
-                    level=xbmc.LOGINFO
-                )
-                for _l in [c for c in candidates if c not in tier_result]:
-                    xbmc.log(f"  TIER{i+1} FAIL: {_l.get('title','?')}", level=xbmc.LOGINFO)
 
         if matched:
             if matched_tier > 1:
-                tier_desc = ' || '.join(
-                    ';'.join('|'.join(g) for g in t) for t in include_tiers
-                )
-                xbmc.log(
-                    f"auto_play_fshare: tier 1–{matched_tier - 1} matched 0, "
-                    f"using tier {matched_tier}",
-                    level=xbmc.LOGINFO
-                )
-                notify(f"Tier 1–{matched_tier - 1} không khớp, dùng tier {matched_tier}", duration=3000, sound=False)
+                xbmc.log(f"auto_play_fshare: tier 1\u2013{matched_tier-1} no match, using tier {matched_tier}", level=xbmc.LOGINFO)
+                notify(f"Tier 1\u2013{matched_tier-1} không khớp, dùng tier {matched_tier}", duration=3000, sound=False)
             links = matched
 
         elif include_tiers:
-            # Tất cả tier đều trống → dừng hẳn, không fallback bừa
-            tier_desc = ' || '.join(
-                ';'.join('|'.join(g) for g in t) for t in include_tiers
-            )
+            _tier_summary = ' | '.join(';'.join(','.join(g) for g in t) for t in include_tiers)
             xbmc.log(
-                f"auto_play_fshare: all {len(include_tiers)} tier(s) matched 0 results "
-                f"(include=[{tier_desc}] exclude=[{'|'.join(exclude_list)}])",
+                f"auto_play_fshare: all {len(include_tiers)} tier(s) 0 match — aborting. [{_tier_summary}]",
                 level=xbmc.LOGWARNING
             )
             notify(
-                f"Không tìm thấy link sau {len(include_tiers)} tier filter — dừng play",
-                duration=4500,
-                sound=False
+                f"Không file nào đạt chất lượng ({_tier_summary}) — dừng play",
+                duration=5000, sound=False
             )
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
         else:
-            # Chỉ có exclude, không có include — dùng candidates đã lọc
-            # Nếu exclude lọc sạch toàn bộ thì dùng list gốc còn hơn không play được
             links = candidates if candidates else links
 
     # ------------------------------------------------------------------ #
-    # 3. Filter size_gb: chỉ giữ file trong khoảng [min_gb, max_gb]
-    #    Cú pháp: 'min-max' tính bằng GB, dùng 0 để bỏ qua một đầu.
-    #    Ví dụ: '5-25' (5–25 GB), '10-0' (≥10 GB), '0-20' (≤20 GB)
+    # 6. Filter size_gb
     # ------------------------------------------------------------------ #
     _size_min_gb = 0.0
     _size_max_gb = 0.0
@@ -4497,74 +4510,22 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
                 _size_min_gb = float(_parts[0]) if _parts[0].strip() else 0.0
                 _size_max_gb = float(_parts[1]) if _parts[1].strip() else 0.0
         except (ValueError, TypeError):
-            xbmc.log(f"auto_play_fshare: invalid size_gb={size_gb!r}, skipping size filter", level=xbmc.LOGWARNING)
-            _size_min_gb = _size_max_gb = 0.0
+            xbmc.log(f"auto_play_fshare: invalid size_gb={size_gb!r}, skipping", level=xbmc.LOGWARNING)
 
     if _size_min_gb > 0 or _size_max_gb > 0:
         _bytes_per_gb = 1024 ** 3
         def _in_size_range(link_info):
             sz_gb = link_info.get('size', 0) / _bytes_per_gb
-            if _size_min_gb > 0 and sz_gb < _size_min_gb:
-                return False
-            if _size_max_gb > 0 and sz_gb > _size_max_gb:
-                return False
+            if _size_min_gb > 0 and sz_gb < _size_min_gb: return False
+            if _size_max_gb > 0 and sz_gb > _size_max_gb: return False
             return True
-
         size_filtered = [l for l in links if _in_size_range(l)]
         if size_filtered:
-            xbmc.log(
-                f"auto_play_fshare: size_gb={size_gb!r} → "
-                f"{len(size_filtered)}/{len(links)} file(s) trong khoảng",
-                level=xbmc.LOGINFO
-            )
             for _l in [l for l in links if not _in_size_range(l)]:
                 xbmc.log(f"  SIZE REMOVED: {_l.get('title','?')} ({_l.get('size',0)/(1024**3):.2f} GB)", level=xbmc.LOGINFO)
             links = size_filtered
         else:
-            xbmc.log(
-                f"auto_play_fshare: size_gb={size_gb!r} không khớp file nào — bỏ filter size",
-                level=xbmc.LOGWARNING
-            )
             notify(f"Không có file trong khoảng {size_gb} GB — bỏ qua filter size", duration=3500, sound=False)
-            # Không return, giữ nguyên links để vẫn play được
-
-    # ------------------------------------------------------------------ #
-    # 3b. Verify: hard filter SxxExx + soft score title
-    #
-    #    Hard filter — SxxExx:
-    #      Nếu search có season+episode, bắt buộc tên file phải chứa đúng
-    #      SxxExx đó. Đây là sai sót phổ biến nhất của timfshare (trả về
-    #      đúng show nhưng sai tập).
-    #      Nếu hard filter loại sạch toàn bộ → bỏ filter (tránh không play được).
-    #
-    #    Soft score — title token overlap:
-    #      Đã tích hợp vào tier loop phía trên. Bước này chỉ còn SxxExx filter.
-    # ------------------------------------------------------------------ #
-
-    if is_episode and season and episode:
-        # Hard filter: tên file phải chứa đúng SxxExx
-        _se_pattern = re.compile(
-            rf'\bS{int(season):02d}E{int(episode):02d}\b',
-            re.IGNORECASE
-        )
-        _verified = [l for l in links if _se_pattern.search(l.get('title', ''))]
-
-        if _verified:
-            xbmc.log(
-                f"auto_play_fshare: SxxExx hard filter S{int(season):02d}E{int(episode):02d} "
-                f"→ {len(_verified)}/{len(links)} passed",
-                level=xbmc.LOGINFO
-            )
-            links = _verified
-        else:
-            xbmc.log(
-                f"auto_play_fshare: SxxExx hard filter found 0 matches — skipping filter",
-                level=xbmc.LOGWARNING
-            )
-            notify(
-                f"Cảnh báo: không file nào chứa S{int(season):02d}E{int(episode):02d} — có thể play nhầm tập",
-                duration=4000, sound=False
-            )
 
     # ------------------------------------------------------------------ #
     # 4. Sort: title score DESC → size DESC
@@ -5044,6 +5005,22 @@ def router(paramstring):
 
         elif action == 'set_autoplay_notify_duration':
             prompt_number_setting('autoplay_notify_duration', 'Nhập thời gian thông báo auto play (mili giây)', get_autoplay_notify_duration())
+            settings_menu()
+
+        elif action == 'set_autoplay_score_threshold':
+            keyboard = xbmc.Keyboard(str(int(get_autoplay_score_threshold() * 100)), 'Nhập ngưỡng khớp tên file (0–100%)')
+            keyboard.doModal()
+            if keyboard.isConfirmed():
+                val = keyboard.getText().strip().rstrip('%')
+                try:
+                    pct = int(val)
+                    if 0 <= pct <= 100:
+                        set_local_setting('autoplay_score_threshold', pct / 100.0)
+                        xbmcgui.Dialog().notification('Auto Play', f'Ngưỡng khớp tên: {pct}%', time=2500)
+                    else:
+                        xbmcgui.Dialog().notification('Lỗi', 'Nhập từ 0 đến 100', time=3000)
+                except ValueError:
+                    xbmcgui.Dialog().notification('Lỗi', 'Chỉ nhập số nguyên', time=3000)
             settings_menu()
 
         elif action == 'set_items_per_page':

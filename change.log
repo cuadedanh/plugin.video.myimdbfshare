@@ -1,6 +1,6 @@
 
 2 file  Includes_Info.xml và  Includes_Images.xml  copy vào đây C:\Users\Nam_PC\AppData\Roaming\Kodi\addons\skin.arctic.horizon.2\1080i để patch ah2 
-nhớ trong player thì dấu , là hoặc, dấu ; là và, dấu ~~ là ngăn cách giữa các tier 
+nhớ trong player thì dấu , là hoặc, dấu ; là và, dấu ~~ là ngăn cách giữa các tier, áp dụng đươc cả trong show_fshare_link
 Trong phần player, để resolver là true để truyền tham số khi autoplay tmdb 
 bắt buộc phải có language en  và dùng các trường en_title và en_showname để nó dịch sang tiếng anh trước search fshare nếu không sẽ không tìm đươc những phim  có origintilte khác tiếng anh như tiếng hàn, tây ban nha...
 Nhớ vào funiture của skin bật cái nhận diện từ file name lên. phần texlabel phải tắt để hiện biểu tượng nếu bật nó chỉ hiện chữ hevc thôi.
@@ -8,3 +8,4 @@ Phần Pl
 2.8 Tóm tắt fix
 Nguyên nhân gốc: Tier loop và title score là 2 bước độc lập. Tier 1 (atmos) match được Wild.Babies.Atmos → accept ngay, không thử tier tiếp. Bước score threshold phía sau chỉ còn mình Wild.Babies → bị block đúng nhưng không có fallback.
 Fix: Tích hợp score threshold vào trong vòng lặp tier:
+2.9: đổi chấm điểm trước khi filter
