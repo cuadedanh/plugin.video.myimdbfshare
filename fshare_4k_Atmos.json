@@ -1,5 +1,6 @@
 {
   "name": "Fshare 4K_ATMOS->4K->1080p->DTS",
+  "language": "en",
   "plugin": "plugin.video.myimdbfshare",
   "priority": 1,
   "is_resolvable": "true",

@@ -1187,9 +1187,25 @@ def fetch_tmdb_details_by_id(tmdb_id, season=None, episode=None):
             except Exception:
                 pass
 
-            # Request 2: episode details (plot, still)
+            # en-US show name — dùng cho Window property TMDbHelper.ListItem.Title
+            # để AH2 skin re-query TMDb Helper service bằng tên tiếng Anh
+            en_show_name = ''
+            try:
+                show_en_resp = requests.get(
+                    f'https://api.themoviedb.org/3/tv/{tmdb_id}',
+                    params=params_en, timeout=5
+                )
+                if show_en_resp.status_code == 200:
+                    en_show_name = show_en_resp.json().get('name', '') or ''
+            except Exception:
+                pass
+            en_show_name = en_show_name or show_name  # fallback về vi nếu lỗi
+
+            # Request 2: episode details (plot, still, tên tập)
             ep_plot  = ''
             ep_still = ''
+            ep_name  = ''      # tên tập vi-VN
+            ep_name_en = ''    # tên tập en-US (fallback)
             ep_resp = requests.get(
                 f'https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}',
                 params=params_vi, timeout=5
@@ -1198,33 +1214,42 @@ def fetch_tmdb_details_by_id(tmdb_id, season=None, episode=None):
                 ep = ep_resp.json()
                 ep_plot  = ep.get('overview', '') or ''
                 ep_still = ep.get('still_path') or ''
+                ep_name  = ep.get('name', '') or ''
 
-                # Fallback en-US nếu plot rỗng
-                if not ep_plot:
+                # Fallback en-US nếu plot hoặc tên tập rỗng
+                if not ep_plot or not ep_name:
                     ep_resp2 = requests.get(
                         f'https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}',
                         params=params_en, timeout=5
                     )
                     if ep_resp2.status_code == 200:
-                        ep_plot = ep_resp2.json().get('overview', '') or ''
+                        ep2 = ep_resp2.json()
+                        if not ep_plot:
+                            ep_plot = ep2.get('overview', '') or ''
+                        ep_name_en = ep2.get('name', '') or ''
+                        if not ep_name:
+                            ep_name = ep_name_en  # dùng en nếu vi không có tên tập
 
             thumb = (f"{TMDB_IMAGE_BASE}w300{ep_still}"  if ep_still else
                      f"{TMDB_IMAGE_BASE}w500{show_poster}" if show_poster else '')
 
             return {
-                'mediatype':   'episode',
-                'title':       f"{show_name} S{int(season):02d}E{int(episode):02d}",
-                'tvshowtitle': show_name,
-                'year':        show_year,
-                'season':      str(season),
-                'episode':     str(episode),
-                'tmdb_id':     str(tmdb_id),
-                'imdb_id':     show_imdb_id,
-                'plot':        ep_plot,
-                'rating':      str(show.get('vote_average', '') or ''),
-                'poster':      f"{TMDB_IMAGE_BASE}w500{show_poster}"  if show_poster else '',
-                'fanart':      f"{TMDB_IMAGE_BASE}w1280{show_fanart}" if show_fanart else '',
-                'thumb':       thumb,
+                'mediatype':      'episode',
+                'title':          f"{show_name} S{int(season):02d}E{int(episode):02d}",
+                'tvshowtitle':    show_name,
+                'en_tvshowtitle': en_show_name,   # tên show en-US cho Window property
+                'ep_title':       ep_name,         # tên tập vi-VN (hoặc en nếu không có vi)
+                'ep_title_en':    ep_name_en,      # tên tập en-US thuần
+                'year':           show_year,
+                'season':         str(season),
+                'episode':        str(episode),
+                'tmdb_id':        str(tmdb_id),
+                'imdb_id':        show_imdb_id,
+                'plot':           ep_plot,
+                'rating':         str(show.get('vote_average', '') or ''),
+                'poster':         f"{TMDB_IMAGE_BASE}w500{show_poster}"  if show_poster else '',
+                'fanart':         f"{TMDB_IMAGE_BASE}w1280{show_fanart}" if show_fanart else '',
+                'thumb':          thumb,
             }
 
     except Exception as e:
@@ -4616,6 +4641,18 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     ctx_fanart = meta.get('fanart', '') or tmdb_ctx.get('fanart', '')
     ctx_rating = meta.get('rating', '') or tmdb_ctx.get('rating', '')
     ctx_title  = meta.get('title', '')  or tmdb_ctx.get('title', '') or title
+
+    # ep_title: tên tập vi-VN từ fetch_tmdb_details_by_id (chỉ có với episode)
+    # Dùng cho setTitle() trên ListItem — hiển thị OSD player tiếng Việt
+    ctx_ep_title = meta.get('ep_title', '') or ''
+
+    # en_tvshowtitle: tên show en-US — dùng cho TMDbHelper.ListItem.Title
+    # để AH2 skin re-query TMDb Helper service bằng tên tiếng Anh
+    ctx_en_tvshowtitle = meta.get('en_tvshowtitle', '') or ''
+
+    # ctx_tvshowtitle: tên show vi-VN từ meta (có thể rỗng nếu meta rỗng)
+    ctx_tvshowtitle = meta.get('tvshowtitle', '') or tvshowtitle or title or ''
+
     # Art bổ sung chỉ có từ TMDb Helper context (clearlogo, clearart...)
     ctx_extra_art = {k: tmdb_ctx.get(k, '') for k in
                      ('clearlogo', 'clearart', 'landscape', 'discart', 'banner')
@@ -4657,12 +4694,16 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     # ------------------------------------------------------------------ #
     # 7. Build ListItem đầy đủ metadata
     # ------------------------------------------------------------------ #
-    list_item = xbmcgui.ListItem(label=ctx_title, path=cdn_url)
+    # Label/title hiển thị: dùng ep_title vi-VN nếu là episode và có sẵn,
+    # fallback về ctx_title ("Show S01E03") nếu không.
+    _display_title = ctx_ep_title if (is_episode and ctx_ep_title) else ctx_title
+
+    list_item = xbmcgui.ListItem(label=_display_title, path=cdn_url)
     list_item.setProperty('IsPlayable', 'true')
     list_item.setMimeType('video/mp4')
 
     info_tag = list_item.getVideoInfoTag()
-    info_tag.setTitle(ctx_title)
+    info_tag.setTitle(_display_title)
     if ctx_plot:
         info_tag.setPlot(ctx_plot)
     if ctx_rating:
@@ -4684,7 +4725,8 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
 
     if is_episode:
         info_tag.setMediaType('episode')
-        info_tag.setTvShowTitle(tvshowtitle or title or '')
+        # setTvShowTitle: tên show vi-VN từ meta (ưu tiên) hoặc tvshowtitle từ params
+        info_tag.setTvShowTitle(ctx_tvshowtitle)
         try:
             info_tag.setSeason(int(season))
             info_tag.setEpisode(int(episode))
@@ -4720,8 +4762,12 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         # và là key Kore/Yatse đọc qua GetInfoLabels
         if ctx_plot:
             _win.setProperty('TMDbHelper.ListItem.Plot',             ctx_plot)
-        if ctx_title:
-            _win.setProperty('TMDbHelper.ListItem.Title',            ctx_title)
+        # TMDbHelper.ListItem.Title phải là tên show en-US (hoặc original)
+        # để AH2 skin re-query TMDb Helper service tìm được đúng show.
+        # Nếu set tên tiếng Việt vào đây, skin lookup thất bại → plot/cast trống.
+        _win_title = ctx_en_tvshowtitle if (is_episode and ctx_en_tvshowtitle) else ctx_title
+        if _win_title:
+            _win.setProperty('TMDbHelper.ListItem.Title',            _win_title)
         if ctx_poster:
             _win.setProperty('TMDbHelper.ListItem.thumb',            ctx_poster)
         if ctx_fanart:
@@ -4734,7 +4780,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             _win.setProperty('TMDbHelper.ListItem.UniqueId.imdb',    str(imdb_id))
         xbmc.log(
             f"auto_play_fshare: pre-push TMDbHelper.ListItem.* OK "
-            f"plot={bool(ctx_plot)} title={bool(ctx_title)}",
+            f"plot={bool(ctx_plot)} title={_win_title!r} ep_title={ctx_ep_title!r}",
             level=xbmc.LOGINFO
         )
     except Exception as _we:
