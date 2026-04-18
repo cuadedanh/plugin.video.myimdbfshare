@@ -4379,6 +4379,19 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         fname_tokens = _title_tokens(link_info.get('title', ''))
         return len(query_tokens & fname_tokens) / len(query_tokens) if fname_tokens else 0.0
 
+    def _year_filter(link_info, query_year):
+        """Hard filter theo năm — chỉ dùng cho movie (không gọi với episode).
+        - File không chứa năm nào → giữ (neutral, năm hay bị bỏ khi upload)
+        - File chứa đúng năm → giữ
+        - File chứa năm khác → loại
+        """
+        fname = link_info.get('title', '')
+        years_in_fname = re.findall(r'\b(?:19|20)\d{2}\b', fname)
+        if not years_in_fname:
+            return True   # không có năm → neutral, giữ lại
+        return str(query_year) in years_in_fname
+
+
     def _is_excluded(link_info):
         fname  = link_info.get('title', '')
         tokens = _tokenize(fname)
@@ -4393,17 +4406,24 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     exclude_list     = _parse_exclude_list(exclude)
     matched_tier     = 0
     _SCORE_THRESHOLD = get_autoplay_score_threshold()
-    _score_title     = tvshowtitle if is_episode else title
+    # Score dùng title (= query gửi vào search_fshare) để nhất quán với kết quả trả về
+    _score_title     = title
     _query_tokens    = _title_tokens(_score_title)
+    # Year hard filter: chỉ áp dụng cho movie có year hợp lệ
+    _year_for_filter = year if (not is_episode and year and str(year).isdigit()) else None
+    # SxxExx exclusion pattern: dùng cho movie filter (loại file tvshow lẫn vào)
+    _se_any_pattern  = re.compile(r'\bS\d{1,2}E\d{1,2}\b', re.IGNORECASE)
 
     xbmc.log(
         f"auto_play_fshare: score_threshold={_SCORE_THRESHOLD:.0%} "
-        f"query_tokens={_query_tokens}",
+        f"query_tokens={_query_tokens} year_filter={_year_for_filter!r}",
         level=xbmc.LOGINFO
     )
 
     # ------------------------------------------------------------------ #
-    # 2. SxxExx hard filter — TRƯỚC exclude/tier
+    # 2. SxxExx filter
+    #    - Episode: chỉ giữ file có đúng SxxExx của tập đang play
+    #    - Movie:   loại hẳn file có bất kỳ pattern SxxExx (tvshow lẫn vào)
     # ------------------------------------------------------------------ #
     if is_episode and season and episode:
         _se_pattern = re.compile(
@@ -4430,14 +4450,60 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             xbmcplugin.setResolvedUrl(handle, False, xbmcgui.ListItem())
             return
 
+    elif not is_episode:
+        # Movie: loại file có bất kỳ SxxExx (tvshow pack lẫn vào kết quả search)
+        _no_se_passed = [l for l in links if not _se_any_pattern.search(l.get('title', ''))]
+        _no_se_failed = [l for l in links if     _se_any_pattern.search(l.get('title', ''))]
+        if _no_se_failed:
+            xbmc.log(
+                f"auto_play_fshare: [Bước 1/Movie-SxxExx] loại {len(_no_se_failed)} file tvshow:",
+                level=xbmc.LOGINFO
+            )
+            for _l in _no_se_failed:
+                xbmc.log(f"  SE EXCLUDED: {_l.get('title','?')}", level=xbmc.LOGINFO)
+        if _no_se_passed:
+            links = _no_se_passed
+        else:
+            xbmc.log(
+                "auto_play_fshare: Movie-SxxExx: tất cả file đều có SxxExx — bỏ qua filter",
+                level=xbmc.LOGWARNING
+            )
+
     # ------------------------------------------------------------------ #
-    # 3. Score filter — TRƯỚC exclude/tier
+    # 3. Year hard filter — chỉ movie, TRƯỚC score filter
+    # ------------------------------------------------------------------ #
+    if _year_for_filter:
+        _year_passed = [l for l in links if _year_filter(l, _year_for_filter)]
+        _year_failed = [l for l in links if not _year_filter(l, _year_for_filter)]
+        xbmc.log(
+            f"auto_play_fshare: [Bước 2/Year] year={_year_for_filter} "
+            f"\u2192 {len(_year_passed)}/{len(links)} passed",
+            level=xbmc.LOGINFO
+        )
+        for _l in _year_failed:
+            xbmc.log(f"  Year FAIL: {_l.get('title','?')}", level=xbmc.LOGINFO)
+        if _year_passed:
+            links = _year_passed
+        else:
+            # Không có file nào khớp năm → có thể năm bị sai từ TMDb Helper,
+            # fallback giữ nguyên links để không block play hoàn toàn
+            xbmc.log(
+                f"auto_play_fshare: Year filter: 0 passed — fallback, bỏ qua year filter",
+                level=xbmc.LOGWARNING
+            )
+            notify(
+                f"Không file nào có năm {_year_for_filter} — bỏ qua filter năm",
+                duration=3500, sound=False
+            )
+
+    # ------------------------------------------------------------------ #
+    # 4. Score filter — TRƯỚC exclude/tier
     # ------------------------------------------------------------------ #
     if _query_tokens:
         _score_passed = [l for l in links if _title_score(l, _query_tokens) >= _SCORE_THRESHOLD]
         _score_failed = [l for l in links if _title_score(l, _query_tokens) < _SCORE_THRESHOLD]
         xbmc.log(
-            f"auto_play_fshare: [Bước 2/Score] threshold={_SCORE_THRESHOLD:.0%} "
+            f"auto_play_fshare: [Bước 3/Score] threshold={_SCORE_THRESHOLD:.0%} "
             f"\u2192 {len(_score_passed)}/{len(links)} passed",
             level=xbmc.LOGINFO
         )
@@ -4476,7 +4542,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         candidates = [l for l in links if not _is_excluded(l)]
         _excluded  = [l for l in links if _is_excluded(l)]
         if _excluded:
-            xbmc.log(f"auto_play_fshare: [Bước 3/Exclude] removed {len(_excluded)}:", level=xbmc.LOGINFO)
+            xbmc.log(f"auto_play_fshare: [Bước 4/Exclude] removed {len(_excluded)}:", level=xbmc.LOGINFO)
             for _l in _excluded:
                 xbmc.log(f"  EXCLUDED: {_l.get('title','?')}", level=xbmc.LOGINFO)
         xbmc.log(f"auto_play_fshare: after exclude \u2192 {len(candidates)} remain", level=xbmc.LOGINFO)
@@ -4491,7 +4557,7 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             tier_result = [l for l in candidates if _matches_groups(l, groups)]
             _tier_kws   = ';'.join(','.join(g) for g in groups)
             xbmc.log(
-                f"auto_play_fshare: [Bước 4/Tier {i+1}] [{_tier_kws}] \u2192 {len(tier_result)} match(es)",
+                f"auto_play_fshare: [Bước 5/Tier {i+1}] [{_tier_kws}] \u2192 {len(tier_result)} match(es)",
                 level=xbmc.LOGINFO
             )
             for _l in tier_result:
@@ -4545,11 +4611,21 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
             if _size_max_gb > 0 and sz_gb > _size_max_gb: return False
             return True
         size_filtered = [l for l in links if _in_size_range(l)]
+        _size_removed = [l for l in links if not _in_size_range(l)]
+        xbmc.log(
+            f"auto_play_fshare: [Bước 6/Size] range={_size_min_gb}-{_size_max_gb} GB "
+            f"\u2192 {len(size_filtered)}/{len(links)} passed",
+            level=xbmc.LOGINFO
+        )
         if size_filtered:
-            for _l in [l for l in links if not _in_size_range(l)]:
+            for _l in _size_removed:
                 xbmc.log(f"  SIZE REMOVED: {_l.get('title','?')} ({_l.get('size',0)/(1024**3):.2f} GB)", level=xbmc.LOGINFO)
             links = size_filtered
         else:
+            xbmc.log(
+                f"auto_play_fshare: Size filter: 0 passed — fallback, bỏ qua filter size",
+                level=xbmc.LOGWARNING
+            )
             notify(f"Không có file trong khoảng {size_gb} GB — bỏ qua filter size", duration=3500, sound=False)
 
     # ------------------------------------------------------------------ #
@@ -4630,9 +4706,12 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         except Exception as e:
             xbmc.log(f"auto_play_fshare: fetch_by_id error: {e}", level=xbmc.LOGWARNING)
 
-    # Fallback: đọc Window context TMDb Helper (không tốn API call)
-    if not meta or not meta.get('plot'):
-        if tmdb_id or imdb_id:
+    # Đọc Window context TMDb Helper:
+    # - Episode: luôn đọc (is_resolver=true → TMDb Helper luôn có context,
+    #   cần tmdb_ctx.get('title') làm ưu tiên 1 cho tvshowtitle)
+    # - Movie: chỉ đọc khi meta thiếu plot (tránh gọi thừa)
+    if tmdb_id or imdb_id:
+        if is_episode or not meta or not meta.get('plot'):
             tmdb_ctx = read_tmdbhelper_context(tmdb_id=tmdb_id)
 
     # Merge: meta từ API ưu tiên, bổ sung art từ TMDb Helper context nếu thiếu
@@ -4642,16 +4721,25 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
     ctx_rating = meta.get('rating', '') or tmdb_ctx.get('rating', '')
     ctx_title  = meta.get('title', '')  or tmdb_ctx.get('title', '') or title
 
-    # ep_title: tên tập vi-VN từ fetch_tmdb_details_by_id (chỉ có với episode)
-    # Dùng cho setTitle() trên ListItem — hiển thị OSD player tiếng Việt
+    # ep_title: tên tập từ fetch_tmdb_details_by_id (vi-VN nếu có, fallback en)
+    # Dùng cho setTitle() trên ListItem — hiển thị OSD player
     ctx_ep_title = meta.get('ep_title', '') or ''
 
-    # en_tvshowtitle: tên show en-US — dùng cho TMDbHelper.ListItem.Title
-    # để AH2 skin re-query TMDb Helper service bằng tên tiếng Anh
-    ctx_en_tvshowtitle = meta.get('en_tvshowtitle', '') or ''
-
-    # ctx_tvshowtitle: tên show vi-VN từ meta (có thể rỗng nếu meta rỗng)
-    ctx_tvshowtitle = meta.get('tvshowtitle', '') or tvshowtitle or title or ''
+    # ctx_tvshowtitle: tên show dùng cho setTvShowTitle() và TMDbHelper.ListItem.Title
+    # Thứ tự ưu tiên:
+    #   1. tvshowtitle param        — {en_showname}/{vi_showname} từ players.json,
+    #      encode sẵn vào URL trước khi resolver được gọi → đáng tin nhất
+    #   2. meta.get('en_tvshowtitle') — fetch en-US fallback
+    #   3. meta.get('tvshowtitle')    — fetch vi-VN last resort
+    # KHÔNG dùng tmdb_ctx.get('title') vì Window(10000) có thể chứa data show cũ
+    # (Service Monitor chưa kịp update khi resolver được trigger)
+    ctx_tvshowtitle = (
+        tvshowtitle
+        or meta.get('en_tvshowtitle', '')
+        or meta.get('tvshowtitle', '')
+        or title
+        or ''
+    )
 
     # Art bổ sung chỉ có từ TMDb Helper context (clearlogo, clearart...)
     ctx_extra_art = {k: tmdb_ctx.get(k, '') for k in
@@ -4725,7 +4813,8 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
 
     if is_episode:
         info_tag.setMediaType('episode')
-        # setTvShowTitle: tên show vi-VN từ meta (ưu tiên) hoặc tvshowtitle từ params
+        # setTvShowTitle: theo thứ tự ưu tiên đã resolve vào ctx_tvshowtitle
+        # (tmdb_ctx Window → tvshowtitle param → en fetch → vi fetch)
         info_tag.setTvShowTitle(ctx_tvshowtitle)
         try:
             info_tag.setSeason(int(season))
@@ -4762,10 +4851,11 @@ def auto_play_fshare(title, year='', imdb_id='', tmdb_id='',
         # và là key Kore/Yatse đọc qua GetInfoLabels
         if ctx_plot:
             _win.setProperty('TMDbHelper.ListItem.Plot',             ctx_plot)
-        # TMDbHelper.ListItem.Title phải là tên show en-US (hoặc original)
-        # để AH2 skin re-query TMDb Helper service tìm được đúng show.
-        # Nếu set tên tiếng Việt vào đây, skin lookup thất bại → plot/cast trống.
-        _win_title = ctx_en_tvshowtitle if (is_episode and ctx_en_tvshowtitle) else ctx_title
+        # TMDbHelper.ListItem.Title với episode phải là tên show theo ngôn ngữ
+        # TMDb Helper đang cache — ctx_tvshowtitle đã resolve đúng thứ tự ưu tiên
+        # (tmdb_ctx → tvshowtitle param → en fallback → vi last resort).
+        # Movie thì dùng ctx_title bình thường.
+        _win_title = ctx_tvshowtitle if (is_episode and ctx_tvshowtitle) else ctx_title
         if _win_title:
             _win.setProperty('TMDbHelper.ListItem.Title',            _win_title)
         if ctx_poster:

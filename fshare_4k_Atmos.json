@@ -4,8 +4,8 @@
   "plugin": "plugin.video.myimdbfshare",
   "priority": 1,
   "is_resolvable": "true",
-  "play_movie": "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare&title={en_title}&year={year}&imdb={imdb}&tmdb={tmdb}&include=2160p;atmos~~2160p~~1080p~~dts&exclude=iso,truehd",
-  "play_episode": "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare&title={en_showname}&year={year}&imdb={imdb}&tmdb={tmdb}&season={season}&episode={episode}&include=atmos~~2160p~~1080p~~720p&exclude=iso",
+  "play_movie": "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare&title={en_title}&year={year}&imdb={imdb}&tmdb={tmdb}&size_gb=0-80&include=2160p;atmos~~2160p~~1080p~~dts&exclude=iso,truehd",
+  "play_episode": "plugin://plugin.video.myimdbfshare/?action=auto_play_fshare&title={en_showname}&year={year}&imdb={imdb}&tmdb={tmdb}&season={season}&episode={episode}&tvshowtitle={en_showname}&size_gb=0-1&include=atmos~~2160p~~1080p~~720p&exclude=iso",
   "search_movie": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={en_title}&year={year}&imdb={imdb}&tmdb={tmdb}&exclude=iso",
   "search_episode": "plugin://plugin.video.myimdbfshare/?action=search_fshare&title={en_showname}&year={year}&imdb={imdb}&tmdb={tmdb}&season={season}&episode={episode}&exclude=iso"
 }
